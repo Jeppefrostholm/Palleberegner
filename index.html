@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Palle-pakke (gravity + Full-layer base + Tetris-mix + 3D)</title>
+<style>
+  :root{
+    --bg:#f8fafc; --panel:#ffffff; --ink:#0f172a; --muted:#475569; --accent:#16a34a; --border:#e2e8f0;
+    --ink-soft:#1f2937; --grid:#94a3b8; --canvas:#f1f5f9;
+  }
+  html,body{ margin:0; padding:0; background:var(--bg); color:#0f172a; font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;}
+  h1{ font-size:20px; margin:16px 0 10px; color:var(--ink-soft);}
+  .wrap{ max-width:1200px; margin:0 auto; padding:16px;}
+  .grid{ display:grid; grid-template-columns: 460px 1fr; gap:16px; align-items:start;}
+  .card{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px; box-shadow:0 2px 12px rgba(15,23,42,.06); position:relative;}
+  label{ display:block; font-size:12px; color:var(--muted); margin:6px 0 4px;}
+  input[type="number"],input[type="text"],input[type="color"]{
+    width:100%; padding:8px 10px; border-radius:8px; border:1px solid var(--border); background:#ffffff; color:#0f172a;
+  }
+  .row{ display:grid; grid-template-columns: repeat(6, 1fr) 44px; gap:8px; align-items:end;}
+  .btn{ background:#e2e8f0; color:#0f172a; border:1px solid var(--border); padding:8px 12px; border-radius:10px; cursor:pointer;}
+  .btn:hover{ background:#dbe3ed;}
+  .btn.primary{ background:#16a34a; border-color:#138a3f; color:#fff; font-weight:600;}
+  .btn.danger{ background:#fee2e2; border-color:#fecaca; color:#991b1b;}
+  .btn:disabled{ opacity:.6; cursor:progress;}
+  .bar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
+  .muted{ color:var(--muted);}
+  .k-types{ display:flex; flex-direction:column; gap:8px;}
+  .hr{ height:1px; background:var(--border); margin:12px 0;}
+  .tabs{ display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap;}
+  .tab{ padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:#fff; color:#0f172a; cursor:pointer}
+  .tab.active{ background:#eef6ff; border-color:#bfdbfe;}
+  .pill{ display:inline-block; background:#eef2f7; border:1px solid var(--border); border-radius:999px; padding:4px 10px; margin-right:6px; font-size:12px; color:#0f172a}
+  canvas{ width:100%; height:480px; background:var(--canvas); border-radius:12px; display:block; border:1px solid var(--border);}
+  .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .pallet-tabs{ display:flex; gap:6px; margin:6px 0 10px; flex-wrap:wrap;}
+  .pallet-tab{ padding:4px 10px; border:1px solid var(--border); border-radius:999px; background:#fff; cursor:pointer; }
+  .pallet-tab.active{ background:#dbeafe; border-color:#bfdbfe;}
+  /* Spinner */
+  .spinner-overlay{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(255,255,255,.6); border-radius:12px; z-index:5; }
+  .spinner-overlay.show{ display:flex; }
+  .spinner{ width:38px; height:38px; border:3px solid #cbd5e1; border-top-color:#0ea5e9; border-radius:50%; animation:spin 1s linear infinite;}
+  @keyframes spin{ to{ transform:rotate(360deg);} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Palle-pakke (gravity + Full-layer base + Tetris-mix + 3D)</h1>
+  <div class="grid">
+    <!-- Formular -->
+    <div class="card">
+      <div class="bar" style="margin-bottom:8px">
+        <div style="flex:1">
+          <label>Palle længde (cm)</label>
+          <input id="palletLength" type="number" value="120" min="10" step="1">
+        </div>
+        <div style="flex:1">
+          <label>Palle bredde (cm)</label>
+          <input id="palletWidth" type="number" value="80" min="10" step="1">
+        </div>
+      </div>
+      <div class="bar" style="margin-bottom:8px">
+        <div style="flex:1">
+          <label>Maks. højde (cm)</label>
+          <input id="maxHeight" type="number" value="180" min="10" step="1">
+        </div>
+        <div style="flex:1">
+          <label>Maks. vægt (kg)</label>
+          <input id="maxWeight" type="number" value="1000" min="1" step="1">
+        </div>
+      </div>
+
+      <div class="hr"></div>
+      <div class="bar" style="justify-content:space-between; margin-bottom:8px">
+        <div class="muted">Kassetyp(er)</div>
+        <button id="addBoxBtn" class="btn" type="button">➕ Tilføj kassetype</button>
+      </div>
+
+      <div id="boxTypes" class="k-types"></div>
+
+      <div class="hr"></div>
+      <div class="bar">
+        <button id="calcBtn" class="btn primary" type="button">Beregn pakning</button>
+      </div>
+
+      <div class="hr"></div>
+      <div class="bar" style="align-items:center;gap:16px">
+        <div style="flex:1">
+          <label>Min. støtte under kasse (%)</label>
+          <input id="minSupport" type="range" min="0" max="100" value="70">
+        </div>
+        <div class="mono muted" id="minSupportVal">70%</div>
+      </div>
+      <div class="bar" style="align-items:center;gap:8px">
+        <label><input id="heavyFirst" type="checkbox" checked> Vægt-prioritér bund (tungest nederst)</label>
+      </div>
+    </div>
+
+    <!-- Visning -->
+    <div class="card" id="vizCard">
+      <div class="bar" style="justify-content:space-between; align-items:flex-end">
+        <div>
+          <span class="pill mono" id="sumLayers">Lag: –</span>
+          <span class="pill mono" id="sumBoxes">Kasser: –</span>
+          <span class="pill mono" id="sumPallets">Paller: 1</span>
+          <span class="pill mono" id="sumHeight">Højde: – cm</span>
+        </div>
+        <div style="width:240px">
+          <label>Vinkel (°) – mere fra siden</label>
+          <input id="pitchSlider" type="range" min="20" max="70" step="1" value="50">
+        </div>
+        <div style="width:240px">
+          <label>Snit (cm) – vis op til højde</label>
+          <input id="layerSlider" type="range" min="0" max="250" step="1" value="60">
+        </div>
+      </div>
+
+      <div class="hr"></div>
+
+      <div class="tabs">
+        <button class="tab active" data-view="top" type="button">Top</button>
+        <button class="tab" data-view="3d" type="button">3D</button>
+      </div>
+
+      <div class="pallet-tabs" id="palletTabs"></div>
+
+      <canvas id="view"></canvas>
+
+      <div class="hr"></div>
+      <div id="log" class="mono muted" style="white-space:pre-wrap; font-size:12px"></div>
+
+      <!-- Spinner -->
+      <div class="spinner-overlay" id="spinner">
+        <div class="spinner" aria-label="Beregner…"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = sel => document.querySelector(sel);
+  const boxTypesEl = $('#boxTypes');
+  const addBtn = $('#addBoxBtn');
+  const calcBtn = $('#calcBtn');
+  const canvas = $('#view');
+  const ctx = canvas.getContext('2d');
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  const pitchSlider = $('#pitchSlider');
+  const layerSlider = $('#layerSlider');
+  const palletTabsEl = $('#palletTabs');
+  const minSupportEl = $('#minSupport');
+  const minSupportValEl = $('#minSupportVal');
+  const heavyFirstEl = $('#heavyFirst');
+  const spinner = $('#spinner');
+
+  let currentView = 'top';
+  let selectedPallet = 0;
+  let minSupport = 0.70;
+  let heavyFirst = true;
+
+  // styrke på "tungest nederst"
+  const HEAVY_BIAS = 12;
+
+  // 3D yaw + pitch
+  let yaw = 0;
+  let pitch = -(50 * Math.PI / 180);
+  let dragging=false, lx=0;
+
+  const EPS = 1e-6;
+  const isDivisible = (a, b) => { if (b<=EPS) return false; const r=a%b; return r<=EPS || (b-r)<=EPS; };
+
+  function addBoxType(pref = {l:40,w:30,h:20,weight:10,count:0,color:'#60a5fa'}) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `
+      <div><label>L (cm)</label><input type="number" min="1" step="1" value="${pref.l}"></div>
+      <div><label>B (cm)</label><input type="number" min="1" step="1" value="${pref.w}"></div>
+      <div><label>H (cm)</label><input type="number" min="1" step="1" value="${pref.h}"></div>
+      <div><label>Vægt (kg)</label><input type="number" min="0.1" step="0.1" value="${pref.weight}"></div>
+      <div><label>Antal</label><input type="number" min="0" step="1" value="${pref.count}"></div>
+      <div><label>Farve</label><input type="color" value="${pref.color}"></div>
+      <button class="btn danger" type="button" title="Fjern">✕</button>
+    `;
+    row.querySelector('button').addEventListener('click', () => row.remove());
+    boxTypesEl.appendChild(row);
+  }
+
+  function getBoxTypeInputs() {
+    const rows = Array.from(boxTypesEl.children);
+    return rows.map((row, idx) => {
+      const [lEl,wEl,hEl,weightEl,countEl,colorEl] = row.querySelectorAll('input');
+      const l = parseFloat(lEl.value), w = parseFloat(wEl.value), h = parseFloat(hEl.value);
+      const weight = parseFloat(weightEl.value);
+      const count = Math.max(0, parseInt(countEl.value,10)||0);
+      const color = colorEl.value || '#60a5fa';
+      return { id:'t'+(idx+1), length:l, width:w, height:h, weight, count, color };
+    }).filter(t => t.length>0 && t.width>0 && t.height>0 && t.weight>0);
+  }
+
+  function orientationsFor(t) {
+    return [
+      { l:t.length, w:t.width,  h:t.height },
+      { l:t.length, w:t.height, h:t.width  },
+      { l:t.width,  w:t.length, h:t.height },
+      { l:t.width,  w:t.height, h:t.length },
+      { l:t.height, w:t.length, h:t.width  },
+      { l:t.height, w:t.width,  h:t.length }
+    ];
+  }
+
+  // ---------- Full-layer planner (kun bunden hvis muligt) ----------
+  function planFirstFullLayer(pallet, boxTypesInput, remainingById, weightLeft){
+    let best=null;
+    for(const t of boxTypesInput){
+      const left=remainingById[t.id];
+      if(!(left===Infinity || left>0)) continue;
+      for(const o of orientationsFor(t)){
+        if(o.h > pallet.maxHeight + EPS) continue;
+        if(o.l>pallet.length+EPS || o.w>pallet.width+EPS) continue;
+
+        const nx=Math.floor(pallet.length/o.l);
+        const ny=Math.floor(pallet.width/o.w);
+        if(nx===0 || ny===0) continue;
+
+        const gridCount=nx*ny;
+        const byWeight=Math.floor(weightLeft / t.weight);
+        const byCount=(left===Infinity) ? gridCount : Math.min(gridCount, left);
+        let feasible=Math.min(gridCount, byWeight, byCount);
+        if(feasible<=0) continue;
+
+        // kræv mindst en fuld række/kolonne
+        const fullRows = Math.min(ny, Math.floor(feasible / nx));
+        const fullCols = Math.min(nx, Math.floor(feasible / ny));
+        const countRows = fullRows * nx;
+        const countCols = fullCols * ny;
+
+        let mode = 'rows', useCount=countRows;
+        if(countCols > countRows){ mode='cols'; useCount=countCols; }
+        if(useCount < Math.min(nx,ny)) continue;
+
+        const usedArea = useCount * o.l * o.w;
+        const totalArea = pallet.length * pallet.width;
+        const waste = totalArea - usedArea;
+        const score = useCount*1e9 - waste - o.h; // mange kasser, lavt spild, lav højde
+
+        if(!best || score > best.score){
+          best = {t,o,nx,ny,mode,useCount,score};
+        }
+      }
+    }
+    return best; // eller null
+  }
+  // -----------------------------------------------------------------
+
+  // ---------- TETRIS-MIX ----------
+  function optimizePackingTetris(pallet, boxTypesInput) {
+    const remainingById = {};
+    for (const t of boxTypesInput) remainingById[t.id] =
+      (t.count==null||isNaN(t.count)) ? Infinity : t.count;
+
+    const pallets = [];
+
+    const G = 1; // cm grid
+    const NxBase = Math.round(pallet.length / G);
+    const NyBase = Math.round(pallet.width  / G);
+
+    const stillBoxesLeft = () => {
+      for (const t of boxTypesInput) {
+        const r = remainingById[t.id];
+        if (r === Infinity || r > 0) return true;
+      }
+      return false;
+    };
+
+    while (stillBoxesLeft()) {
+      const pal = { boxes:[], palletLength:pallet.length, palletWidth:pallet.width, layerHeights:[] };
+      pallets.push(pal);
+
+      let weightLeft = pallet.maxWeight;
+      let Hmax = 0;
+
+      const Nx = NxBase, Ny = NyBase;
+      const H = Array.from({length:Nx}, ()=>Array(Ny).fill(0));
+
+      const areaSumUnder = (ix,iy,w,l) => {
+        let s = 0;
+        for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) s += H[x][y];
+        return s;
+      };
+      const maxUnder = (ix,iy,w,l) => {
+        let m = 0;
+        for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) if (H[x][y]>m) m = H[x][y];
+        return m;
+      };
+      const supportRatioAtTop = (ix,iy,w,l,top) => {
+        let covered=0, cells=w*l;
+        for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) if (H[x][y] === top) covered++;
+        return covered / cells;
+      };
+      const raiseRectTo = (ix,iy,w,l,newTop) => {
+        for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) H[x][y] = newTop;
+      };
+      const hMaxAll = () => {
+        let m=0; for (let x=0;x<Nx;x++) for (let y=0;y<Ny;y++) if (H[x][y]>m) m=H[x][y]; return m;
+      };
+
+      // --- Specialcase: første lag som fuldt grid hvis muligt
+      if (Hmax === 0) {
+        const best = planFirstFullLayer(pallet, boxTypesInput, remainingById, weightLeft);
+        if (best){
+          let placed=0;
+          if (best.mode==='rows'){
+            const rows = best.useCount / best.nx;
+            for(let iy=0; iy<rows; iy++){
+              for(let ix=0; ix<best.nx; ix++){
+                const x = ix * best.o.l, y = iy * best.o.w;
+                raiseRectTo(ix*Math.round(best.o.l/G), iy*Math.round(best.o.w/G),
+                            Math.round(best.o.l/G), Math.round(best.o.w/G),
+                            best.o.h);
+                pal.boxes.push({
+                  x, y, z:0,
+                  length:best.o.l, width:best.o.w, height:best.o.h,
+                  typeId:best.t.id, color:best.t.color, layer:1, palletIndex:pallets.length
+                });
+                placed++;
+              }
+            }
+          }else{
+            const cols = best.useCount / best.ny;
+            for(let ix=0; ix<cols; ix++){
+              for(let iy=0; iy<best.ny; iy++){
+                const x = ix * best.o.l, y = iy * best.o.w;
+                raiseRectTo(ix*Math.round(best.o.l/G), iy*Math.round(best.o.w/G),
+                            Math.round(best.o.l/G), Math.round(best.o.w/G),
+                            best.o.h);
+                pal.boxes.push({
+                  x, y, z:0,
+                  length:best.o.l, width:best.o.w, height:best.o.h,
+                  typeId:best.t.id, color:best.t.color, layer:1, palletIndex:pallets.length
+                });
+                placed++;
+              }
+            }
+          }
+          Hmax = best.o.h;
+          weightLeft -= placed * best.t.weight;
+          if (remainingById[best.t.id] !== Infinity) remainingById[best.t.id] -= placed;
+        }
+      }
+      // --- /specialcase
+
+      // Greedy Tetris-mix
+      while (true) {
+        let best = null;
+
+        for (const t of boxTypesInput) {
+          const left = remainingById[t.id];
+          if (!(left===Infinity || left>0)) continue;
+          if (t.weight > weightLeft + EPS) continue;
+
+          for (const o of orientationsFor(t)) {
+            const w = Math.round(o.l / G), l = Math.round(o.w / G);
+            const h = o.h;
+
+            if (o.l > pallet.length + EPS || o.w > pallet.width + EPS) continue;
+
+            for (let ix=0; ix<=Nx - w; ix++) {
+              for (let iy=0; iy<=Ny - l; iy++) {
+
+                const top = maxUnder(ix,iy,w,l);
+                const cover = supportRatioAtTop(ix,iy,w,l,top);
+                if (cover < (minSupport||0)) continue;
+
+                if (top + h > pallet.maxHeight + EPS) continue;
+                if (t.weight > weightLeft + EPS) continue;
+
+                const peakAfter = Math.max(Hmax, top + h);
+                const addedVol = (top + h)*w*l - areaSumUnder(ix,iy,w,l);
+
+                const divisibleBonus =
+                  (isDivisible(pallet.length, o.l) && isDivisible(pallet.width, o.w)) ? 1 : 0;
+
+                // stærk vægt-bias: tunge kasser belønnes, jo lavere de lægges
+                const effVol = addedVol - (heavyFirst ? HEAVY_BIAS * t.weight * (pallet.maxHeight - top) : 0);
+
+                // Primært: laveste ny top. Sekundært: effVol (med vægtbonus). Dernæst dækning/divisibility.
+                const score = [peakAfter, effVol, -cover, -divisibleBonus];
+
+                if (!best || lexLess(score, best.score)) {
+                  best = { t,o,ix,iy,w,l,h, top, score };
+                }
+              }
+            }
+          }
+        }
+
+        if (!best) break;
+
+        // placer
+        raiseRectTo(best.ix,best.iy,best.w,best.l, best.top + best.h);
+        Hmax = Math.max(Hmax, best.top + best.h);
+        weightLeft -= best.t.weight;
+        if (remainingById[best.t.id] !== Infinity) remainingById[best.t.id]--;
+
+        pal.boxes.push({
+          x: best.ix * G,
+          y: best.iy * G,
+          z: best.top,
+          length: best.o.l, width: best.o.w, height: best.o.h,
+          typeId: best.t.id, color: best.t.color
+        });
+
+        if (weightLeft <= EPS || Hmax >= pallet.maxHeight - EPS) break;
+      }
+
+      // Annotér lag-info
+      const zLevels = Array.from(new Set(pal.boxes.map(b=>b.z))).sort((a,b)=>a-b);
+      const zToLayer = new Map(zLevels.map((z,i)=>[z,i+1]));
+      pal.boxes.forEach(b => b.layer = zToLayer.get(b.z));
+      pal.layerHeights = zLevels.map(z=>{
+        let mh = 0; for (const b of pal.boxes) if (b.z===z) mh = Math.max(mh, b.height); return mh;
+      });
+      pal.totalHeight = hMaxAll();
+    }
+
+    const all = []; for (const p of pallets) for (const b of p.boxes) all.push(b);
+    return { pallets, boxes: all };
+  }
+
+  function lexLess(a,b){
+    for (let i=0;i<Math.max(a.length,b.length);i++){
+      const x=a[i]??0, y=b[i]??0;
+      if (x<y) return true;
+      if (x>y) return false;
+    }
+    return false;
+  }
+  // ---------- /TETRIS-MIX ----------
+
+  // ---- Tegning ----
+  function ensureCanvas() {
+    const W = canvas.clientWidth|0, H = canvas.clientHeight|0;
+    if (canvas.width !== W) canvas.width = W;
+    if (canvas.height !== H) canvas.height = H;
+    ctx.clearRect(0,0,W,H);
+    return {W,H};
+  }
+
+  function drawTop(pallet, boxes, sliceZ){
+    const {W,H}=ensureCanvas();
+    if(!pallet||!boxes||boxes.length===0){ ctx.fillStyle= '#ffffff'; ctx.fillRect(0,0,W,H); return; }
+    const L = pallet.palletLength, B = pallet.palletWidth, pad=20;
+    const scale = Math.min((W-2*pad)/L, (H-2*pad)/B);
+
+    ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle= '#94a3b8'; ctx.lineWidth=2; ctx.strokeRect(pad,pad,L*scale,B*scale);
+
+    const vis = boxes.filter(b => (b.z+b.height) <= sliceZ + EPS);
+    for (const b of vis){
+      ctx.fillStyle=b.color||'#60a5fa';
+      ctx.fillRect(pad+b.x*scale, pad+b.y*scale, b.length*scale, b.width*scale);
+      ctx.strokeStyle='rgba(15,23,42,.25)';
+      ctx.strokeRect(pad+b.x*scale, pad+b.y*scale, b.length*scale, b.width*scale);
+    }
+  }
+
+  function draw3D(pallet, boxes, sliceZ){
+    const {W,H}=ensureCanvas();
+    if(!pallet || !boxes || boxes.length===0){
+      ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H); return;
+    }
+
+    const L = pallet.palletLength;
+    const B = pallet.palletWidth;
+
+    const cosz=Math.cos(yaw), sinz=Math.sin(yaw);
+    const cosx=Math.cos(pitch), sinx=Math.sin(pitch);
+
+    const cx=L/2, cy=B/2;
+    function rot(x,y,z){
+      const dx=x-cx, dy=y-cy;
+      const xz = dx*cosz - dy*sinz;   // yaw (om Z)
+      const yz = dx*sinz + dy*cosz;
+      const y2 = yz*cosx - z*sinx;    // pitch (om X)
+      const z2 = yz*sinx + z*cosx;
+      return {x:xz, y:y2, z:z2};
+    }
+
+    // Auto-fit til canvas
+    const C=[rot(0,0,0),rot(L,0,0),rot(L,B,0),rot(0,B,0),
+             rot(0,0,sliceZ),rot(L,0,sliceZ),rot(L,B,sliceZ),rot(0,B,sliceZ)];
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+    for(const p of C){ if(p.x<minX)minX=p.x; if(p.x>maxX)maxX=p.x; if(p.y<minY)minY=p.y; if(p.y>maxY)maxY=p.y; }
+    const pad=30;
+    const wModel=Math.max(1e-6, maxX-minX);
+    const hModel=Math.max(1e-6, maxY-minY);
+    const scale=Math.min((W-2*pad)/wModel, (H-2*pad)/hModel);
+    const midX=(minX+maxX)/2, midY=(minY+maxY)/2;
+    const cx2 = W/2 - midX*scale;
+    const cy2 = H/2 +  midY*scale;
+
+    function proj(x,y,z){
+      const p=rot(x,y,z);
+      return { x: cx2 + p.x*scale, y: cy2 - p.y*scale, z: p.z };
+    }
+
+    // Baggrund
+    ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+
+    // Palle-top
+    (function(){
+      const p=[proj(0,0,0),proj(L,0,0),proj(L,B,0),proj(0,B,0)];
+      ctx.beginPath(); ctx.moveTo(p[0].x,p[0].y);
+      for(let i=1;i<4;i++) ctx.lineTo(p[i].x,p[i].y);
+      ctx.closePath();
+      ctx.fillStyle='#e2e8f0';
+      ctx.strokeStyle='#cbd5e1';
+      ctx.lineWidth=1.5;
+      ctx.fill(); ctx.stroke();
+    })();
+
+    // Bokse – lav facetter med simpel shading, sorter på dybde
+    const vis = boxes.filter(b => (b.z + b.height) <= sliceZ + EPS);
+    const faces=[];
+    function makeFaces(b){
+      const x=b.x,y=b.y,z=b.z,l=b.length,w=b.width,h=b.height;
+      const P=[
+        proj(x,   y,   z),
+        proj(x+l, y,   z),
+        proj(x+l, y+w, z),
+        proj(x,   y+w, z),
+        proj(x,   y,   z+h),
+        proj(x+l, y,   z+h),
+        proj(x+l, y+w, z+h),
+        proj(x,   y+w, z+h)
+      ];
+      const c=b.color||'#60a5fa';
+      const shades=[1.04,0.96,0.90,0.84,0.80,0.76]; // top,front,right,back,left,bottom
+      const f=[
+        {idx:[4,5,6,7], k:shades[0]},
+        {idx:[3,2,6,7], k:shades[1]},
+        {idx:[1,2,6,5], k:shades[2]},
+        {idx:[0,1,5,4], k:shades[3]},
+        {idx:[0,3,7,4], k:shades[4]},
+        {idx:[0,1,2,3], k:shades[5]},
+      ];
+      const tint=(hex,k)=>{
+        const s=hex.slice(1);
+        const r=parseInt(s.substr(0,2),16), g=parseInt(s.substr(2,2),16), b2=parseInt(s.substr(4,2),16);
+        const rr=Math.min(255,Math.max(0,Math.round(r*k)));
+        const gg=Math.min(255,Math.max(0,Math.round(g*k)));
+        const bb=Math.min(255,Math.max(0,Math.round(b2*k)));
+        return `rgb(${rr},${gg},${bb})`;
+      };
+      for(const F of f){
+        const pts=F.idx.map(i=>P[i]);
+        const zavg=pts.reduce((s,p)=>s+p.z,0)/pts.length;
+        faces.push({pts, fill:tint(c,F.k), stroke:'rgba(15,23,42,.45)', zavg});
+      }
+    }
+    vis.forEach(makeFaces);
+
+    faces.sort((a,b)=>a.zavg-b.zavg);
+    for(const F of faces){
+      ctx.beginPath();
+      ctx.moveTo(F.pts[0].x,F.pts[0].y);
+      for(let i=1;i<F.pts.length;i++) ctx.lineTo(F.pts[i].x,F.pts[i].y);
+      ctx.closePath();
+      ctx.fillStyle=F.fill;
+      ctx.strokeStyle=F.stroke;
+      ctx.lineWidth=1.1;
+      ctx.fill(); ctx.stroke();
+    }
+  }
+
+  function perPalletStats(pallet){
+    let total = 0;
+    for (const b of pallet.boxes) total = Math.max(total, b.z + b.height);
+    const zLevels = Array.from(new Set(pallet.boxes.map(b=>b.z))).sort((a,b)=>a-b);
+    const layerHeights = zLevels.map(z=>{
+      let mh = 0; for (const b of pallet.boxes) if (b.z===z) mh = Math.max(mh, b.height); return mh;
+    });
+    return { layerHeights, total };
+  }
+
+  function renderPalletTabs(packing){
+    palletTabsEl.innerHTML = '';
+    packing.pallets.forEach((p, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'pallet-tab' + (i===selectedPallet ? ' active' : '');
+      const stats = perPalletStats(p);
+      btn.textContent = `Palle ${i+1}`;
+      btn.title = `Højde: ${Math.round(stats.total)} cm`;
+      btn.addEventListener('click', () => {
+        selectedPallet = i;
+        updateHeaderPills(packing);
+        draw();
+        renderPalletTabs(packing);
+      });
+      palletTabsEl.appendChild(btn);
+    });
+  }
+
+  function updateHeaderPills(packing){
+    const pal = packing.pallets[selectedPallet] || packing.pallets[0];
+    const stats = perPalletStats(pal);
+    $('#sumLayers').textContent = `Lag: ${stats.layerHeights.length}`;
+    $('#sumBoxes').textContent  = `Kasser: ${pal.boxes.length}`;
+    $('#sumPallets').textContent= `Paller: ${packing.pallets.length}`;
+    $('#sumHeight').textContent = `Højde: ${Math.round(stats.total)} cm`;
+    layerSlider.max = Math.max( (Math.ceil(stats.total/10)*10), 50 );
+    layerSlider.value = Math.min(layerSlider.value, layerSlider.max);
+    const lines = stats.layerHeights.map((h,i)=>`Lag ${i+1}: ${h} cm`);
+    $('#log').textContent = lines.join('\n');
+  }
+
+  function draw(){
+    if(!window._packing) { const {width,height}=canvas; ctx.clearRect(0,0,width,height); return; }
+    const pal = window._packing.pallets[selectedPallet] || window._packing.pallets[0];
+    const sliceZ = parseInt(layerSlider.value,10)||0;
+    if (currentView==='top') drawTop(pal, pal.boxes, sliceZ);
+    else draw3D(pal, pal.boxes, sliceZ);
+  }
+
+  function withSpinner(fn){
+    calcBtn.disabled = true;
+    addBtn.disabled = true;
+    spinner.classList.add('show');
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        try { fn(); }
+        finally {
+          spinner.classList.remove('show');
+          calcBtn.disabled = false;
+          addBtn.disabled = false;
+        }
+      }, 0);
+    });
+  }
+
+  function calculate() {
+    const pallet = {
+      length: parseFloat($('#palletLength').value),
+      width: parseFloat($('#palletWidth').value),
+      maxHeight: parseFloat($('#maxHeight').value),
+      maxWeight: parseFloat($('#maxWeight').value),
+    };
+    const types = getBoxTypeInputs();
+    if (!pallet.length || !pallet.width || !pallet.maxHeight || !pallet.maxWeight) { alert('Udfyld pallefelter'); return; }
+    if (types.length===0) { alert('Tilføj mindst én kassetype'); return; }
+
+    withSpinner(() => {
+      const packing = optimizePackingTetris(pallet, types);
+      window._packing = packing;
+      selectedPallet = 0;
+      renderPalletTabs(packing);
+      updateHeaderPills(packing);
+      draw();
+    });
+  }
+
+  // wiring
+  addBtn.addEventListener('click', () => addBoxType());
+  calcBtn.addEventListener('click', calculate);
+  layerSlider.addEventListener('input', draw);
+  if(minSupportEl){
+    minSupportEl.addEventListener('input',()=>{
+      const v=parseInt(minSupportEl.value,10)||0;
+      minSupport=Math.max(0,Math.min(100,v))/100;
+      if(minSupportValEl) minSupportValEl.textContent=v+'%';
+    });
+  }
+  if(heavyFirstEl){
+    heavyFirstEl.addEventListener('change',()=>{ heavyFirst = !!heavyFirstEl.checked; });
+    heavyFirst = !!heavyFirstEl.checked;
+  }
+  pitchSlider.addEventListener('input', ()=>{
+    const deg = parseInt(pitchSlider.value,10) || 50;
+    pitch = -(deg * Math.PI / 180);
+    if (currentView==='3d') draw();
+  });
+  tabs.forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      tabs.forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      currentView = btn.dataset.view;
+      draw();
+    });
+  });
+  canvas.addEventListener('mousedown', e=>{ dragging=true; lx=e.clientX; });
+  window.addEventListener('mouseup', ()=> dragging=false);
+  window.addEventListener('mousemove', e=>{
+    if(!dragging) return;
+    const dx=e.clientX-lx; lx=e.clientX;
+    yaw += dx * 0.01;
+    if (currentView==='3d') draw();
+  });
+
+  // start med én eksempel-kassetype
+  addBoxType({l:40,w:30,h:20,weight:10,count:0,color:'#60a5fa'});
+  calculate();
+})();
+</script>
+</body>
+</html>
