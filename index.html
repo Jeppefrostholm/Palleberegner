@@ -1229,7 +1229,7 @@ window.addEventListener('error', function(e){
 
   function serializeState(){
     function safeBoxTypes(){
-      let list = (window.state && Array.isArray(window.state.boxTypes)) ? window.state.boxTypes : [];
+      let list = (state && Array.isArray(state.boxTypes)) ? state.boxTypes : [];
       if (!list || !list.length){
         if (window._packing){
           try { list = inferBoxTypesFromPacking(window._packing); } catch(_){ list = []; }
@@ -1317,10 +1317,10 @@ window.addEventListener('error', function(e){
       }
 
       // 3) Kassetypeliste
-      if (window.state){
+      if (state){
         let list = Array.isArray(data.boxTypes) ? data.boxTypes : [];
         if (!list.length && data.packing) { try { list = inferBoxTypesFromPacking(data.packing); } catch(_){} }
-        window.state.boxTypes = list;
+        state.boxTypes = list;
         if (typeof window.renderBoxList === 'function') window.renderBoxList();
       }
 
@@ -1335,10 +1335,10 @@ window.addEventListener('error', function(e){
 
       // 5) Safety-pass (nogle UI'er nulstiller efter presets). Kør en ekstra render i næste tick.
       setTimeout(()=>{
-        if (window.state){
+        if (state){
           let list = Array.isArray(data.boxTypes) ? data.boxTypes : [];
           if (!list.length && data.packing) { try { list = inferBoxTypesFromPacking(data.packing); } catch(_){} }
-          window.state.boxTypes = list;
+          state.boxTypes = list;
           if (typeof window.renderBoxList === 'function') window.renderBoxList();
         }
         if (data.packing){
@@ -1418,10 +1418,14 @@ window.addEventListener('error', function(e){
     let data;
     try { data = JSON.parse(json); } catch(e){ alert('Koden er ikke gyldig.'); return; }
     applyState(data);
-    const boxes = Array.isArray(data.boxTypes) ? data.boxTypes.length : 0;
+    const boxes = (state && Array.isArray(state.boxTypes)) ? state.boxTypes.length : (Array.isArray(data.boxTypes) ? data.boxTypes.length : 0);
     const pallets = (data.packing && Array.isArray(data.packing.pallets)) ? data.packing.pallets.length
                     : (Array.isArray(data.packing) ? data.packing.length : 0);
-    alert('Løsning indlæst ✔\nKassetyper: ' + boxes + '\nPaller i layout: ' + pallets);
+    const total = (state && Array.isArray(state.boxTypes)) ? state.boxTypes.reduce((s,b)=>s + (Number(b.count)||0),0) : 0;
+    alert('Løsning indlæst ✔
+Kassetyper: ' + boxes + ' (typer)
+Kasser i alt: ' + total + '
+Paller i layout: ' + pallets);
   });
 
   // Autoload fra URL-hash ved direkte link
