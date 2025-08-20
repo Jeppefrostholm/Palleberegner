@@ -1228,13 +1228,69 @@ window.addEventListener('error', function(e){
   }
 
   function serializeState(){
+    function safeBoxTypes(){
+      let list = (window.state && Array.isArray(window.state.boxTypes)) ? window.state.boxTypes : [];
+      if (!list || !list.length){
+        if (window._packing){
+          try { list = inferBoxTypesFromPacking(window._packing); } catch(_){ list = []; }
+        }
+      }
+      return Array.isArray(list) ? list : [];
+    }
+    
     return {
       palletType: (palletTypeSel && palletTypeSel.value) || 'europalle',
       pallet: pallet(),
       minSupport: (typeof window.minSupport === 'number' ? window.minSupport : 0.70),
-      boxTypes: (window.state && Array.isArray(window.state.boxTypes)) ? window.state.boxTypes : [],
+      boxTypes: safeBoxTypes(),
       packing: window._packing || null
-    };
+    }
+  function num(x){ const v = Number(x); return isFinite(v) ? v : 0; }
+  function pick(obj, keys){
+    for (const k of keys){
+      if (obj && obj[k] != null) return obj[k];
+    }
+    return undefined;
+  }
+  function flattenBoxesFromPacking(packing){
+    const out = [];
+    const arr = Array.isArray(packing?.pallets) ? packing.pallets : (Array.isArray(packing) ? packing : []);
+    for (const pal of arr){
+      const layerBoxes = (pal?.layers || []).flatMap(l => l?.boxes || l?.items || []);
+      const topBoxes   = pal?.boxes || pal?.items || [];
+      const boxes = (layerBoxes.length ? layerBoxes : topBoxes);
+      for (const b of boxes){
+        out.push(b);
+      }
+    }
+    return out;
+  }
+  function inferBoxTypesFromPacking(packing){
+    const boxes = flattenBoxesFromPacking(packing);
+    const map = new Map();
+    for (const b of boxes){
+      const L = num(pick(b, ['L','l','length']));
+      const W = num(pick(b, ['B','b','W','w','width']));
+      const H = num(pick(b, ['H','h','height']));
+      const kg= num(pick(b, ['weight','kg','Weight']));
+      const name = pick(b, ['name','id','sku','title']) || '';
+      const color = pick(b, ['color','colour']) || '#4f86c6';
+      const key = [name,L,W,H,kg,color].join('|');
+      const prev = map.get(key);
+      if (prev) prev.count += 1;
+      else map.set(key, { name, L, W, H, weight: kg, count: 1, color, flatOnly: !!pick(b,['flatOnly']), bottomRequired: !!pick(b,['bottomRequired']) });
+    }
+    return Array.from(map.values()).map(x => ({
+      name: x.name,
+      L: x.L, B: x.W, H: x.H,
+      weight: x.weight,
+      count: x.count,
+      color: x.color,
+      flatOnly: x.flatOnly,
+      bottomRequired: x.bottomRequired
+    }));
+  }
+;
   }
 
   function applyState(data){
@@ -1261,8 +1317,10 @@ window.addEventListener('error', function(e){
       }
 
       // 3) Kassetypeliste
-      if (data.boxTypes && window.state){
-        window.state.boxTypes = Array.isArray(data.boxTypes) ? data.boxTypes : [];
+      if (window.state){
+        let list = Array.isArray(data.boxTypes) ? data.boxTypes : [];
+        if (!list.length && data.packing) { try { list = inferBoxTypesFromPacking(data.packing); } catch(_){} }
+        window.state.boxTypes = list;
         if (typeof window.renderBoxList === 'function') window.renderBoxList();
       }
 
@@ -1277,8 +1335,10 @@ window.addEventListener('error', function(e){
 
       // 5) Safety-pass (nogle UI'er nulstiller efter presets). Kør en ekstra render i næste tick.
       setTimeout(()=>{
-        if (data.boxTypes && window.state){
-          window.state.boxTypes = Array.isArray(data.boxTypes) ? data.boxTypes : [];
+        if (window.state){
+          let list = Array.isArray(data.boxTypes) ? data.boxTypes : [];
+          if (!list.length && data.packing) { try { list = inferBoxTypesFromPacking(data.packing); } catch(_){} }
+          window.state.boxTypes = list;
           if (typeof window.renderBoxList === 'function') window.renderBoxList();
         }
         if (data.packing){
