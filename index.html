@@ -108,6 +108,7 @@
         <div class="bar">
           <button id="uploadCsvBtn" class="btn" type="button">📂 Upload CSV</button>
           <button id="addBoxBtn" class="btn" type="button">➕ Tilføj kassetype</button>
+          <button id="exportCsvBtn" class="btn" type="button" onclick="try{window.exportCsv && window.exportCsv()}catch(e){alert('Export-fejl: '+e.message)}">💾 Eksportér CSV</button>
         </div>
       </div>
       <input type="file" id="csvFile" accept=".csv" style="display:none" />
@@ -120,11 +121,6 @@
       <div class="bar">
         <button id="calcBtn" class="btn primary" type="button">Beregn pakning</button>
       </div>
-      <div class="bar" style="gap:8px; margin-top:6px">
-        <button id="shareBtn" class="btn" type="button">Gem & del</button>
-        <button id="importBtn" class="btn" type="button">Indlæs kode/link</button>
-      </div>
-
       <div class="hr"></div>
       <div class="bar" style="align-items:center;gap:12px">
         <div style="flex:1">
@@ -1480,6 +1476,54 @@ window.addEventListener('error', function(e){
   window.addEventListener('load', tryAutoloadNow);
   window.addEventListener('hashchange', tryAutoloadNow);
 })();
+
+  // === CSV EXPORTER (reads current UI rows) ===
+  (function(){
+    function _num(v){ var n=Number(v); return isFinite(n)?n:0; }
+    function _sanitizeName(s){ return String(s||'').replace(/[;,\n\r]/g,' ').trim(); }
+    function _download(filename, text, mime){
+      var blob = new Blob([text], {type: mime || 'text/plain'});
+      var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename;
+      document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
+    }
+    function collectRows(){
+      var list = document.querySelectorAll('#boxList .boxrow');
+      var out = [];
+      list.forEach(function(row){
+        var g = function(k){ var el=row.querySelector('[data-k="'+k+'"]'); return el?el.value:''; };
+        var name = _sanitizeName(g('name'));
+        var L = _num(g('L')), B = _num(g('B')), H = _num(g('H')), W = _num(g('weight')), C = _num(g('count'));
+        if (L>0 && B>0 && H>0 && W>0 && C>0){
+          out.push({name,L,B,H,weight:W,count:C});
+        }
+      });
+      return out;
+    }
+    function toCsv(rows){
+      var lines = [];
+      lines.push(['Document_No_','ItemNo','Height_cm','Width_cm','Length_cm','Weight_kg','Quantity'].join(','));
+      rows.forEach(function(b){
+        lines.push(['EXPORT', b.name, b.H, b.B, b.L, b.weight, b.count].join(','));
+      });
+      return lines.join('\r\n');
+    }
+    function exportCsvImpl(){
+      try{
+        var rows = collectRows();
+        if (!rows.length){ alert('Ingen gyldige kasser at eksportere.'); return; }
+        var csv = toCsv(rows);
+        var ts = new Date().toISOString().slice(0,19).replace(/:/g,'-');
+        _download('palleberegner-'+ts+'.csv', csv, 'text/csv;charset=utf-8');
+      }catch(e){
+        alert('CSV-eksport fejlede: '+(e&&e.message?e.message:e));
+        console.error(e);
+      }
+    }
+    window.exportCsv = exportCsvImpl;
+    // also expose as globalThis for inline handlers
+    try{ globalThis.exportCsv = exportCsvImpl; }catch{}
+  })();
+  // === END CSV EXPORTER ===
 </script>
 
 </body>
