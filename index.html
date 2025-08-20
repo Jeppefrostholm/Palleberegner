@@ -57,8 +57,7 @@
   .modal .row > div{flex:1;}
   .modal .info{background:#f1f5f9;border:1px solid var(--border);border-radius:8px;padding:8px;color:#64748b;font-size:13px;}
 </style>
-  <!-- LZString til korte delingskoder/links -->
-  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js" defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -121,7 +120,6 @@
       <div class="bar">
         <button id="calcBtn" class="btn primary" type="button">Beregn pakning</button>
       </div>
-
       <div class="bar" style="gap:8px; margin-top:6px">
         <button id="shareBtn" class="btn" type="button">Gem & del</button>
         <button id="importBtn" class="btn" type="button">Indlæs kode/link</button>
@@ -1210,84 +1208,22 @@ window.addEventListener('error', function(e){
 
 
 <script>
-
 // ======= Delingslink / Delingskode =======
 (function(){
   const $ = sel => document.querySelector(sel);
   const palletTypeSel = $('#palletType');
-  const minSupportEl  = $('#minSupport');
+  const minSupportEl = $('#minSupport');
 
-  // Helpers ----------------------------------------------------
-  function getAppState(){
-    // Support both global `state` and `window.state`
-    if (typeof state !== 'undefined') return state;
-    if (!window.state) window.state = { boxTypes: [] };
-    return window.state;
-  }
   function pallet(){
     return {
-      length:   parseFloat($('#palletLength')?.value || 0),
-      width:    parseFloat($('#palletWidth')?.value  || 0),
-      maxHeight:parseFloat($('#maxHeight')?.value    || 0),
-      maxWeight:parseFloat($('#maxWeight')?.value    || 0),
+      length: parseFloat($('#palletLength').value),
+      width:  parseFloat($('#palletWidth').value),
+      maxHeight: parseFloat($('#maxHeight').value),
+      maxWeight: parseFloat($('#maxWeight').value),
       baseHeight: (window._palletBaseHeight||0),
     };
   }
-  function num(x){ const v = Number(x); return isFinite(v) ? v : 0; }
-  function pick(obj, keys){
-    for (const k of keys){
-      if (obj && obj[k] != null) return obj[k];
-    }
-    return undefined;
-  }
-  function flattenBoxesFromPacking(packing){
-    const out = [];
-    const arr = Array.isArray(packing?.pallets) ? packing.pallets : (Array.isArray(packing) ? packing : []);
-    for (const pal of arr){
-      const layerBoxes = (pal?.layers || []).flatMap(l => l?.boxes || l?.items || []);
-      const topBoxes   = pal?.boxes || pal?.items || [];
-      const boxes = (layerBoxes.length ? layerBoxes : topBoxes);
-      for (const b of boxes) out.push(b);
-    }
-    return out;
-  }
-  function inferBoxTypesFromPacking(packing){
-    const boxes = flattenBoxesFromPacking(packing);
-    const map = new Map();
-    for (const b of boxes){
-      const L = num(pick(b, ['L','l','length']));
-      const B = num(pick(b, ['B','b','W','w','width']));
-      const H = num(pick(b, ['H','h','height']));
-      const kg= num(pick(b, ['weight','kg','Weight']));
-      const name = pick(b, ['name','id','sku','title']) || '';
-      const color = pick(b, ['color','colour']) || '#4f86c6';
-      const key = [name,L,B,H,kg,color].join('|');
-      const prev = map.get(key);
-      if (prev) prev.count += 1;
-      else map.set(key, { name, L, B, H, weight: kg, count: 1, color,
-                          flatOnly: !!pick(b,['flatOnly']), bottomRequired: !!pick(b,['bottomRequired']) });
-    }
-    return Array.from(map.values()).map(x => ({
-      name: x.name,
-      L: x.L, B: x.B, H: x.H,
-      weight: x.weight,
-      count: x.count,
-      color: x.color,
-      flatOnly: x.flatOnly,
-      bottomRequired: x.bottomRequired
-    }));
-  }
-  function safeBoxTypes(){
-    let list = getAppState().boxTypes || [];
-    if (!Array.isArray(list) || !list.length){
-      if (window._packing){
-        try { list = inferBoxTypesFromPacking(window._packing); } catch(_) { list = []; }
-      }
-    }
-    return Array.isArray(list) ? list : [];
-  }
 
-  // Serialize & Apply -----------------------------------------
   function serializeState(){
     return {
       palletType: (palletTypeSel && palletTypeSel.value) || 'europalle',
@@ -1297,9 +1233,66 @@ window.addEventListener('error', function(e){
       packing: window._packing || null
     };
   }
+
+  // Helpers til at udlede/normalisere bokse
+  function num(x){ const v = Number(x); return isFinite(v) ? v : 0; }
+  function pick(obj, keys){
+    for (const k of keys){
+      if (obj && obj[k] != null) return obj[k];
+    }
+    return undefined;
+  }
+  function flattenBoxesFromPacking(packing){
+    const arr = Array.isArray(packing?.pallets) ? packing.pallets : (Array.isArray(packing) ? packing : []);
+    const out = [];
+    for (const pal of arr){
+      const fromLayers = (pal?.layers || []).flatMap(l => (l?.boxes || l?.items || []));
+      const fromTop    = pal?.boxes || pal?.items || [];
+      const boxes = fromLayers.length ? fromLayers : fromTop;
+      for (const b of boxes) out.push(b);
+    }
+    return out;
+  }
+  function inferBoxTypesFromPacking(packing){
+    const boxes = flattenBoxesFromPacking(packing);
+    const map = new Map();
+    for (const b of boxes){
+      const L = num(pick(b, ['L','l','length']));
+      const W = num(pick(b, ['B','b','W','w','width']));
+      const H = num(pick(b, ['H','h','height']));
+      const kg= num(pick(b, ['weight','kg','Weight']));
+      const name = pick(b, ['name','id','sku','title']) || '';
+      const color = pick(b, ['color','colour']) || '#4f86c6';
+      const key = [name,L,W,H,kg,color].join('|');
+      const prev = map.get(key);
+      if (prev) prev.count += 1;
+      else map.set(key, { name, L, W, H, weight: kg, count: 1, color, flatOnly: !!pick(b,['flatOnly']), bottomRequired: !!pick(b,['bottomRequired']) });
+    }
+    return Array.from(map.values()).map(x => ({
+      name: x.name,
+      L: x.L, B: x.W, H: x.H,
+      weight: x.weight,
+      count: x.count,
+      color: x.color,
+      flatOnly: x.flatOnly,
+      bottomRequired: x.bottomRequired
+    }));
+  }
+  function safeBoxTypes(){
+    // Brug global 'state' hvis den findes, ellers window.state
+    let list = (typeof state !== 'undefined' && Array.isArray(state.boxTypes)) ? state.boxTypes :
+               ((window.state && Array.isArray(window.state.boxTypes)) ? window.state.boxTypes : []);
+    if (!list || !list.length){
+      if (window._packing){
+        try { list = inferBoxTypesFromPacking(window._packing); } catch(_){ list = []; }
+      }
+    }
+    return Array.isArray(list) ? list : [];
+  }
+
   function applyState(data){
     try{
-      // 1) Pallet preset + values
+      // 1) Palle preset + felter
       if (data.palletType && palletTypeSel) {
         palletTypeSel.value = data.palletType;
         if (typeof window.applyPalletPreset === 'function') window.applyPalletPreset(data.palletType);
@@ -1313,20 +1306,23 @@ window.addEventListener('error', function(e){
         if (MW) MW.value = p.maxWeight;
         window._palletBaseHeight = p.baseHeight||0;
       }
+
       // 2) Min support
       if (typeof data.minSupport === 'number' && minSupportEl){
         minSupportEl.value = Math.round((data.minSupport)*100);
         minSupportEl.dispatchEvent(new Event('input', {bubbles:true}));
       }
-      // 3) Box types (with fallback from packing)
-      {
+
+      // 3) Kassetypeliste (brug den rigtige state-reference)
+      if ((typeof state !== 'undefined' || window.state)){
+        const target = (typeof state !== 'undefined') ? state : window.state;
         let list = Array.isArray(data.boxTypes) ? data.boxTypes : [];
         if (!list.length && data.packing) { try { list = inferBoxTypesFromPacking(data.packing); } catch(_){} }
-        const st = getAppState();
-        st.boxTypes = list;
+        target.boxTypes = list;
         if (typeof window.renderBoxList === 'function') window.renderBoxList();
       }
-      // 4) Packing / draw
+
+      // 4) Pakning/canvas
       if (data.packing){
         window._packing = data.packing;
         window.selectedPallet = 0;
@@ -1334,21 +1330,40 @@ window.addEventListener('error', function(e){
         if (typeof window.updateHeaderPills === 'function') window.updateHeaderPills(window._packing);
         if (typeof window.draw === 'function') window.draw();
       }
-      // Safety: re-apply in next tick (some presets overwrite once)
+
+      // 5) Safety-pass i næste tick (i tilfælde af preset-handlers der nulstiller)
       setTimeout(()=>{
-        if (typeof window.renderBoxList === 'function') window.renderBoxList();
-        if (typeof window.draw === 'function') window.draw();
-      },0);
+        if ((typeof state !== 'undefined' || window.state)){
+          const target2 = (typeof state !== 'undefined') ? state : window.state;
+          let list = Array.isArray(data.boxTypes) ? data.boxTypes : [];
+          if (!list.length && data.packing) { try { list = inferBoxTypesFromPacking(data.packing); } catch(_){ } }
+          target2.boxTypes = list;
+          if (typeof window.renderBoxList === 'function') window.renderBoxList();
+        }
+        if (data.packing){
+          window._packing = data.packing;
+          window.selectedPallet = 0;
+          if (typeof window.renderPalletTabs === 'function') window.renderPalletTabs(window._packing);
+          if (typeof window.updateHeaderPills === 'function') window.updateHeaderPills(window._packing);
+          if (typeof window.draw === 'function') window.draw();
+        }
+      }, 0);
+
     }catch(e){
       console.error('applyState error', e);
-      alert('Kunne ikke indlæse koden.');
+      alert('Kunne ikke indlæse koden. ' + (e && e.message ? e.message : ''));
     }
   }
 
-  // Build/parse payload ---------------------------------------
+  // Payload build: brug LZString hvis tilgængelig, ellers plain JSON
   function buildPayload(){
     const json = JSON.stringify(serializeState());
-    return LZString.compressToEncodedURIComponent(json);
+    try{
+      if (typeof LZString !== 'undefined' && LZString.compressToEncodedURIComponent){
+        return 'z:' + LZString.compressToEncodedURIComponent(json);
+      }
+    }catch(_){}
+    return 'j:' + encodeURIComponent(json);
   }
   function buildShareUrl(){
     const payload = buildPayload();
@@ -1361,8 +1376,6 @@ window.addEventListener('error', function(e){
     window.prompt('Kopiér dette:', text);
     return Promise.resolve();
   }
-
-  // UI --------------------------------------------------------
   function showShareModal(url, payload){
     const html = `
       <h3>Del pakkeløsning</h3>
@@ -1381,14 +1394,14 @@ window.addEventListener('error', function(e){
       document.getElementById('share-copy-code').onclick = () => copyText(payload);
       const mail = document.getElementById('share-mail');
       const subject = encodeURIComponent('Pakkeløsning');
-      const body = encodeURIComponent('Åbn løsningen her:\\n' + url);
+      const body = encodeURIComponent('Åbn løsningen her:\n' + url);
       mail.href = `mailto:?subject=${subject}&body=${body}`;
     } else {
       copyText(url).then(()=>alert('Link kopieret!'));
     }
   }
 
-  $('#shareBtn')?.addEventListener('click', ()=>{
+  document.getElementById('shareBtn')?.addEventListener('click', ()=>{
     try{
       const url = buildShareUrl();
       const payload = buildPayload();
@@ -1398,37 +1411,74 @@ window.addEventListener('error', function(e){
     }
   });
 
-  $('#importBtn')?.addEventListener('click', ()=>{
+  document.getElementById('importBtn')?.addEventListener('click', ()=>{
     const input = window.prompt('Indsæt delingskode eller fuldt link:');
     if (!input) return;
     let payload = input.trim();
     const m = payload.match(/#p=([^&]+)/);
     if (m) payload = m[1];
     let json;
-    try { json = LZString.decompressFromEncodedURIComponent(payload); } catch(e){}
+    try {
+      if (payload.startsWith('z:')){
+        const raw = payload.slice(2);
+        if (typeof LZString === 'undefined' || !LZString.decompressFromEncodedURIComponent) throw new Error('Komprimeringsbibliotek mangler (LZString).');
+        json = LZString.decompressFromEncodedURIComponent(raw);
+      } else if (payload.startsWith('j:')) {
+        json = decodeURIComponent(payload.slice(2));
+      } else {
+        if (typeof LZString !== 'undefined') json = LZString.decompressFromEncodedURIComponent(payload);
+        if (!json) json = decodeURIComponent(payload);
+      }
+    } catch(e){
+      console.error('Dekomprimering fejlede:', e);
+      alert('Kunne ikke læse den gemte kode. Tjek at koden er korrekt – eller prøv igen.\n\nDetalje: ' + (e && e.message ? e.message : e));
+      return;
+    }
     if (!json){ alert('Kunne ikke læse koden.'); return; }
     let data;
-    try { data = JSON.parse(json); } catch(e){ alert('Koden er ikke gyldig.'); return; }
+    try { data = JSON.parse(json); } catch(e){ alert('Koden er ikke gyldig JSON.'); return; }
     applyState(data);
-    const typesCount = Array.isArray(getAppState().boxTypes) ? getAppState().boxTypes.length : 0;
-    const totalBoxes = (Array.isArray(getAppState().boxTypes) ? getAppState().boxTypes.reduce((s,b)=>s+(Number(b.count)||0),0) : 0);
+    const types = Array.isArray(data.boxTypes) ? data.boxTypes.length : 0;
+    let total = 0;
+    if (Array.isArray(data.boxTypes)) total = data.boxTypes.reduce((s,b)=>s+(Number(b.count)||0),0);
+    if (!total && data.packing){
+      try { total = flattenBoxesFromPacking(data.packing).length; } catch(_) {}
+    }
     const pallets = (data.packing && Array.isArray(data.packing.pallets)) ? data.packing.pallets.length
                     : (Array.isArray(data.packing) ? data.packing.length : 0);
-    alert('Løsning indlæst ✔\\nKassetyper: ' + typesCount + '\\nKasser i alt: ' + totalBoxes + '\\nPaller i layout: ' + pallets);
+    alert('Løsning indlæst ✔\nKassetyper: ' + types + '\nKasser i alt: ' + (total||'–') + '\nPaller i layout: ' + pallets);
   });
 
-  // Autoload fra URL-hash ved direkte link
+  // Autoload fra URL-hash – robust
   function autoloadFromHash(){
     if (!location.hash.startsWith('#p=')) return;
+    let payload = location.hash.slice(3);
+    let json;
     try{
-      const payload = location.hash.slice(3);
-      const json = LZString.decompressFromEncodedURIComponent(payload);
+      if (payload.startsWith('z:') && typeof LZString !== 'undefined'){
+        json = LZString.decompressFromEncodedURIComponent(payload.slice(2));
+      } else if (payload.startsWith('j:')) {
+        json = decodeURIComponent(payload.slice(2));
+      } else {
+        if (typeof LZString !== 'undefined') json = LZString.decompressFromEncodedURIComponent(payload);
+        if (!json) json = decodeURIComponent(payload);
+      }
       if (!json) return;
       const data = JSON.parse(json);
       applyState(data);
-    }catch(_){}
+    }catch(e){
+      console.error('autoload error', e);
+      alert('Kunne ikke autolæse linket.');
+    }
   }
-  window.addEventListener('load', autoloadFromHash);
+  function tryAutoloadNow(){ try { autoloadFromHash(); } catch(_){ } }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', tryAutoloadNow);
+  } else {
+    tryAutoloadNow();
+  }
+  window.addEventListener('load', tryAutoloadNow);
+  window.addEventListener('hashchange', tryAutoloadNow);
 })();
 </script>
 
