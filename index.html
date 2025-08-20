@@ -1210,6 +1210,7 @@ window.addEventListener('error', function(e){
 
 
 <script>
+
 // ======= Delingslink / Delingskode =======
 (function(){
   const $ = sel => document.querySelector(sel);
@@ -1238,7 +1239,7 @@ window.addEventListener('error', function(e){
 
   function applyState(data){
     try{
-      // Palle preset + felter
+      // 1) Palle preset + felter
       if (data.palletType && palletTypeSel) {
         palletTypeSel.value = data.palletType;
         if (typeof window.applyPalletPreset === 'function') window.applyPalletPreset(data.palletType);
@@ -1253,19 +1254,19 @@ window.addEventListener('error', function(e){
         window._palletBaseHeight = p.baseHeight||0;
       }
 
-      // Min support
+      // 2) Min support
       if (typeof data.minSupport === 'number' && minSupportEl){
         minSupportEl.value = Math.round((data.minSupport)*100);
         minSupportEl.dispatchEvent(new Event('input', {bubbles:true}));
       }
 
-      // Kassetypeliste
+      // 3) Kassetypeliste
       if (data.boxTypes && window.state){
         window.state.boxTypes = Array.isArray(data.boxTypes) ? data.boxTypes : [];
         if (typeof window.renderBoxList === 'function') window.renderBoxList();
       }
 
-      // Pakning/canvas
+      // 4) Pakning/canvas
       if (data.packing){
         window._packing = data.packing;
         window.selectedPallet = 0;
@@ -1273,6 +1274,22 @@ window.addEventListener('error', function(e){
         if (typeof window.updateHeaderPills === 'function') window.updateHeaderPills(window._packing);
         if (typeof window.draw === 'function') window.draw();
       }
+
+      // 5) Safety-pass (nogle UI'er nulstiller efter presets). Kør en ekstra render i næste tick.
+      setTimeout(()=>{
+        if (data.boxTypes && window.state){
+          window.state.boxTypes = Array.isArray(data.boxTypes) ? data.boxTypes : [];
+          if (typeof window.renderBoxList === 'function') window.renderBoxList();
+        }
+        if (data.packing){
+          window._packing = data.packing;
+          window.selectedPallet = 0;
+          if (typeof window.renderPalletTabs === 'function') window.renderPalletTabs(window._packing);
+          if (typeof window.updateHeaderPills === 'function') window.updateHeaderPills(window._packing);
+          if (typeof window.draw === 'function') window.draw();
+        }
+      }, 0);
+
     }catch(e){
       console.error('applyState error', e);
       alert('Kunne ikke indlæse koden.');
@@ -1341,7 +1358,10 @@ window.addEventListener('error', function(e){
     let data;
     try { data = JSON.parse(json); } catch(e){ alert('Koden er ikke gyldig.'); return; }
     applyState(data);
-    alert('Løsning indlæst ✔');
+    const boxes = Array.isArray(data.boxTypes) ? data.boxTypes.length : 0;
+    const pallets = (data.packing && Array.isArray(data.packing.pallets)) ? data.packing.pallets.length
+                    : (Array.isArray(data.packing) ? data.packing.length : 0);
+    alert('Løsning indlæst ✔\nKassetyper: ' + boxes + '\nPaller i layout: ' + pallets);
   });
 
   // Autoload fra URL-hash ved direkte link
