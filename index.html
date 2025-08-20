@@ -1215,36 +1215,24 @@ window.addEventListener('error', function(e){
 (function(){
   const $ = sel => document.querySelector(sel);
   const palletTypeSel = $('#palletType');
-  const minSupportEl = $('#minSupport');
+  const minSupportEl  = $('#minSupport');
 
+  // Helpers ----------------------------------------------------
+  function getAppState(){
+    // Support both global `state` and `window.state`
+    if (typeof state !== 'undefined') return state;
+    if (!window.state) window.state = { boxTypes: [] };
+    return window.state;
+  }
   function pallet(){
     return {
-      length: parseFloat($('#palletLength').value),
-      width:  parseFloat($('#palletWidth').value),
-      maxHeight: parseFloat($('#maxHeight').value),
-      maxWeight: parseFloat($('#maxWeight').value),
+      length:   parseFloat($('#palletLength')?.value || 0),
+      width:    parseFloat($('#palletWidth')?.value  || 0),
+      maxHeight:parseFloat($('#maxHeight')?.value    || 0),
+      maxWeight:parseFloat($('#maxWeight')?.value    || 0),
       baseHeight: (window._palletBaseHeight||0),
     };
   }
-
-  function serializeState(){
-    function safeBoxTypes(){
-      let list = (state && Array.isArray(state.boxTypes)) ? state.boxTypes : [];
-      if (!list || !list.length){
-        if (window._packing){
-          try { list = inferBoxTypesFromPacking(window._packing); } catch(_){ list = []; }
-        }
-      }
-      return Array.isArray(list) ? list : [];
-    }
-    
-    return {
-      palletType: (palletTypeSel && palletTypeSel.value) || 'europalle',
-      pallet: pallet(),
-      minSupport: (typeof window.minSupport === 'number' ? window.minSupport : 0.70),
-      boxTypes: safeBoxTypes(),
-      packing: window._packing || null
-    }
   function num(x){ const v = Number(x); return isFinite(v) ? v : 0; }
   function pick(obj, keys){
     for (const k of keys){
@@ -1259,9 +1247,7 @@ window.addEventListener('error', function(e){
       const layerBoxes = (pal?.layers || []).flatMap(l => l?.boxes || l?.items || []);
       const topBoxes   = pal?.boxes || pal?.items || [];
       const boxes = (layerBoxes.length ? layerBoxes : topBoxes);
-      for (const b of boxes){
-        out.push(b);
-      }
+      for (const b of boxes) out.push(b);
     }
     return out;
   }
@@ -1270,19 +1256,20 @@ window.addEventListener('error', function(e){
     const map = new Map();
     for (const b of boxes){
       const L = num(pick(b, ['L','l','length']));
-      const W = num(pick(b, ['B','b','W','w','width']));
+      const B = num(pick(b, ['B','b','W','w','width']));
       const H = num(pick(b, ['H','h','height']));
       const kg= num(pick(b, ['weight','kg','Weight']));
       const name = pick(b, ['name','id','sku','title']) || '';
       const color = pick(b, ['color','colour']) || '#4f86c6';
-      const key = [name,L,W,H,kg,color].join('|');
+      const key = [name,L,B,H,kg,color].join('|');
       const prev = map.get(key);
       if (prev) prev.count += 1;
-      else map.set(key, { name, L, W, H, weight: kg, count: 1, color, flatOnly: !!pick(b,['flatOnly']), bottomRequired: !!pick(b,['bottomRequired']) });
+      else map.set(key, { name, L, B, H, weight: kg, count: 1, color,
+                          flatOnly: !!pick(b,['flatOnly']), bottomRequired: !!pick(b,['bottomRequired']) });
     }
     return Array.from(map.values()).map(x => ({
       name: x.name,
-      L: x.L, B: x.W, H: x.H,
+      L: x.L, B: x.B, H: x.H,
       weight: x.weight,
       count: x.count,
       color: x.color,
@@ -1290,12 +1277,29 @@ window.addEventListener('error', function(e){
       bottomRequired: x.bottomRequired
     }));
   }
-;
+  function safeBoxTypes(){
+    let list = getAppState().boxTypes || [];
+    if (!Array.isArray(list) || !list.length){
+      if (window._packing){
+        try { list = inferBoxTypesFromPacking(window._packing); } catch(_) { list = []; }
+      }
+    }
+    return Array.isArray(list) ? list : [];
   }
 
+  // Serialize & Apply -----------------------------------------
+  function serializeState(){
+    return {
+      palletType: (palletTypeSel && palletTypeSel.value) || 'europalle',
+      pallet: pallet(),
+      minSupport: (typeof window.minSupport === 'number' ? window.minSupport : 0.70),
+      boxTypes: safeBoxTypes(),
+      packing: window._packing || null
+    };
+  }
   function applyState(data){
     try{
-      // 1) Palle preset + felter
+      // 1) Pallet preset + values
       if (data.palletType && palletTypeSel) {
         palletTypeSel.value = data.palletType;
         if (typeof window.applyPalletPreset === 'function') window.applyPalletPreset(data.palletType);
@@ -1309,22 +1313,20 @@ window.addEventListener('error', function(e){
         if (MW) MW.value = p.maxWeight;
         window._palletBaseHeight = p.baseHeight||0;
       }
-
       // 2) Min support
       if (typeof data.minSupport === 'number' && minSupportEl){
         minSupportEl.value = Math.round((data.minSupport)*100);
         minSupportEl.dispatchEvent(new Event('input', {bubbles:true}));
       }
-
-      // 3) Kassetypeliste
-      if (state){
+      // 3) Box types (with fallback from packing)
+      {
         let list = Array.isArray(data.boxTypes) ? data.boxTypes : [];
         if (!list.length && data.packing) { try { list = inferBoxTypesFromPacking(data.packing); } catch(_){} }
-        state.boxTypes = list;
+        const st = getAppState();
+        st.boxTypes = list;
         if (typeof window.renderBoxList === 'function') window.renderBoxList();
       }
-
-      // 4) Pakning/canvas
+      // 4) Packing / draw
       if (data.packing){
         window._packing = data.packing;
         window.selectedPallet = 0;
@@ -1332,30 +1334,18 @@ window.addEventListener('error', function(e){
         if (typeof window.updateHeaderPills === 'function') window.updateHeaderPills(window._packing);
         if (typeof window.draw === 'function') window.draw();
       }
-
-      // 5) Safety-pass (nogle UI'er nulstiller efter presets). Kør en ekstra render i næste tick.
+      // Safety: re-apply in next tick (some presets overwrite once)
       setTimeout(()=>{
-        if (state){
-          let list = Array.isArray(data.boxTypes) ? data.boxTypes : [];
-          if (!list.length && data.packing) { try { list = inferBoxTypesFromPacking(data.packing); } catch(_){} }
-          state.boxTypes = list;
-          if (typeof window.renderBoxList === 'function') window.renderBoxList();
-        }
-        if (data.packing){
-          window._packing = data.packing;
-          window.selectedPallet = 0;
-          if (typeof window.renderPalletTabs === 'function') window.renderPalletTabs(window._packing);
-          if (typeof window.updateHeaderPills === 'function') window.updateHeaderPills(window._packing);
-          if (typeof window.draw === 'function') window.draw();
-        }
-      }, 0);
-
+        if (typeof window.renderBoxList === 'function') window.renderBoxList();
+        if (typeof window.draw === 'function') window.draw();
+      },0);
     }catch(e){
       console.error('applyState error', e);
       alert('Kunne ikke indlæse koden.');
     }
   }
 
+  // Build/parse payload ---------------------------------------
   function buildPayload(){
     const json = JSON.stringify(serializeState());
     return LZString.compressToEncodedURIComponent(json);
@@ -1371,6 +1361,8 @@ window.addEventListener('error', function(e){
     window.prompt('Kopiér dette:', text);
     return Promise.resolve();
   }
+
+  // UI --------------------------------------------------------
   function showShareModal(url, payload){
     const html = `
       <h3>Del pakkeløsning</h3>
@@ -1389,14 +1381,14 @@ window.addEventListener('error', function(e){
       document.getElementById('share-copy-code').onclick = () => copyText(payload);
       const mail = document.getElementById('share-mail');
       const subject = encodeURIComponent('Pakkeløsning');
-      const body = encodeURIComponent('Åbn løsningen her:\n' + url);
+      const body = encodeURIComponent('Åbn løsningen her:\\n' + url);
       mail.href = `mailto:?subject=${subject}&body=${body}`;
     } else {
       copyText(url).then(()=>alert('Link kopieret!'));
     }
   }
 
-  document.getElementById('shareBtn')?.addEventListener('click', ()=>{
+  $('#shareBtn')?.addEventListener('click', ()=>{
     try{
       const url = buildShareUrl();
       const payload = buildPayload();
@@ -1406,7 +1398,7 @@ window.addEventListener('error', function(e){
     }
   });
 
-  document.getElementById('importBtn')?.addEventListener('click', ()=>{
+  $('#importBtn')?.addEventListener('click', ()=>{
     const input = window.prompt('Indsæt delingskode eller fuldt link:');
     if (!input) return;
     let payload = input.trim();
@@ -1418,14 +1410,11 @@ window.addEventListener('error', function(e){
     let data;
     try { data = JSON.parse(json); } catch(e){ alert('Koden er ikke gyldig.'); return; }
     applyState(data);
-    const boxes = (state && Array.isArray(state.boxTypes)) ? state.boxTypes.length : (Array.isArray(data.boxTypes) ? data.boxTypes.length : 0);
+    const typesCount = Array.isArray(getAppState().boxTypes) ? getAppState().boxTypes.length : 0;
+    const totalBoxes = (Array.isArray(getAppState().boxTypes) ? getAppState().boxTypes.reduce((s,b)=>s+(Number(b.count)||0),0) : 0);
     const pallets = (data.packing && Array.isArray(data.packing.pallets)) ? data.packing.pallets.length
                     : (Array.isArray(data.packing) ? data.packing.length : 0);
-    const total = (state && Array.isArray(state.boxTypes)) ? state.boxTypes.reduce((s,b)=>s + (Number(b.count)||0),0) : 0;
-    alert('Løsning indlæst ✔
-Kassetyper: ' + boxes + ' (typer)
-Kasser i alt: ' + total + '
-Paller i layout: ' + pallets);
+    alert('Løsning indlæst ✔\\nKassetyper: ' + typesCount + '\\nKasser i alt: ' + totalBoxes + '\\nPaller i layout: ' + pallets);
   });
 
   // Autoload fra URL-hash ved direkte link
