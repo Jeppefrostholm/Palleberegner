@@ -144,7 +144,7 @@
         <div class="bar" style="gap:20px">
           <div style="width:240px">
             <label>Vinkel (°) – mere fra siden</label>
-            <input id="pitchSlider" type="range" min="0" max="45" step="1" value="12">
+            <input id="pitchSlider" type="range" min="0" max="45" step="1" value="45">
           </div>
           <div style="width:240px">
             <label>Snit (cm) – vis op til højde</label>
@@ -156,8 +156,8 @@
       <div class="hr"></div>
 
       <div class="tabs">
-        <button class="tab active" data-view="top" type="button">Top</button>
-        <button class="tab" data-view="3d" type="button">3D</button>
+        <button class="tab" data-view="top" type="button">Top</button>
+        <button class="tab active" data-view="3d" type="button">3D</button>
       </div>
 
       <div class="pallet-tabs" id="palletTabs"></div>
@@ -175,6 +175,17 @@
 <div id="modalRoot"></div>
 
 <script>
+function _num(v){
+  if (typeof v === 'string') v = v.replace(/\s+/g,'').replace(',', '.');
+  var n = Number(v);
+  return isFinite(n) ? n : 0;
+}
+function num(x){
+  if (typeof x === 'string') x = x.replace(/\s+/g,'').replace(',', '.');
+  const v = Number(x);
+  return isFinite(v) ? v : 0;
+}
+
 (() => {
   const $ = sel => document.querySelector(sel);
   const boxList = $('#boxList');
@@ -230,13 +241,13 @@
 
 
 
-  let currentView = 'top';
+  let currentView = '3d';
   let selectedPallet = 0;
   let minSupport = 0.70;
 
   // 3D rotation + hover/klik
   let yaw = 0;
-  let pitch = -((parseInt(pitchSlider.value,10)||12) * Math.PI/180);
+  let pitch = -((parseInt(pitchSlider.value,10)||45) * Math.PI/180);
   let dragging = false, lx = 0;
   let hitBoxes = [];
 
@@ -282,7 +293,7 @@
           const k = e.target.dataset.k;
           if(k==="flatOnly" || k==="bottomRequired") bt[k] = e.target.checked;
           else if(k==="name" || k==="color") bt[k] = e.target.value;
-          else bt[k] = Number(e.target.value);
+          else bt[k] = _num(e.target.value);
         });
       });
       row.querySelector('button').onclick = () => {
@@ -692,7 +703,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
         if (remainingById[best.t.id] !== Infinity) remainingById[best.t.id]--;
         if (best.top === 0) hasGroundPlacement[best.t.id] = true;
 
-        pal.boxes.push({ x: best.ix*G, y: best.iy*G, z: best.top, length: best.o.l, width: best.o.w, height: best.o.h, typeId: best.t.id, color: best.t.color, name: best.t.name||best.t.id });
+        pal.boxes.push({ x: best.ix*G, y: best.iy*G, z: best.top, length: best.o.l, width: best.o.w, height: best.o.h, typeId: best.t.id, color: best.t.color, name: best.t.name||best.t.id , weight: best.t.weight });
         if (weightLeft <= EPS) break;
       }
 
@@ -809,6 +820,7 @@ function tryFullGridOverride(pal, boxTypesInput, packing){
   
 function draw3D(pal, boxes, sliceZ, baseHeight){
     hitPolys = [];
+    hitBoxes = [];
     const {W,H} = ensureCanvas(); if (!pal) return;
     const L = pal.palletLength, B = pal.palletWidth;
     const cosz = Math.cos(yaw),  sinz = Math.sin(yaw);
@@ -891,6 +903,7 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
       const P=[ proj(x,y,z), proj(x+l,y,z), proj(x+l,y+w,z), proj(x,y+w,z),
                 proj(x,y,z+h), proj(x+l,y,z+h), proj(x+l,y+w,z+h), proj(x,y+w,z+h) ];
       hitPolys.push({box:b, poly:[{x:P[0].x,y:P[0].y},{x:P[1].x,y:P[1].y},{x:P[2].x,y:P[2].y},{x:P[3].x,y:P[3].y}]});
+      hitBoxes.push({box:b, poly:[{x:P[0].x,y:P[0].y},{x:P[1].x,y:P[1].y},{x:P[2].x,y:P[2].y},{x:P[3].x,y:P[3].y}]});
       const base = b.color || '#60a5fa';
       const tint=(hex,k)=>{ const s=hex.replace('#',''); const r=parseInt(s.slice(0,2),16), g=parseInt(s.slice(2,4),16), bl=parseInt(s.slice(4,6),16);
         const f=v=>Math.max(0,Math.min(255,Math.round(v*k))); return `rgb(${f(r)},${f(g)},${f(bl)})`; };
@@ -955,6 +968,26 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
     canvas.style.cursor = found ? 'pointer' : 'default';
     canvas.title = found ? (found.box.name || '(ingen navn)') : '';
   });
+  canvas.addEventListener('click', e=>{
+    if(currentView!=='3d') return;
+    const rect=canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    let found = null;
+    for (const hb of hitBoxes) { if (pointInPoly(x, y, hb.poly)) { found = hb; break; } }
+    if (found) {
+      const idx = state.boxTypes.findIndex(bt => (bt.name||'').trim() === (found.box.name||'').trim());
+      if (idx > -1) {
+        const rows = boxList.querySelectorAll('.boxrow');
+        const row = rows[idx];
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          row.classList.add('highlight');
+          setTimeout(()=> row.classList.remove('highlight'), 1000);
+        }
+      }
+    }
+  });
+
 
   /* ==================== CSV + Sampak ==================== */
   function showModal(html){
