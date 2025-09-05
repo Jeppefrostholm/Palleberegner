@@ -34,7 +34,7 @@
   .pallet-tabs{ display:flex; gap:6px; margin:6px 0 10px; flex-wrap:wrap;}
   .pallet-tab{ padding:4px 10px; border:1px solid var(--border); border-radius:999px; background:#fff; cursor:pointer; }
   .pallet-tab.active{ background:#dbeafe; border-color:#bfdbfe;}
-  .spinner-overlay{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(255,255,255,.6); border-radius:12px; z-index:5; }
+  .spinner-overlay{ pointer-events:none !important;  position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(255,255,255,.6); border-radius:12px; z-index:5; }
   .spinner-overlay.show{ display:flex; }
   .spinner{ width:30px; height:30px; border:3px solid #cbd5e1; border-top-color:#0ea5e9; border-radius:50%; animation:spin 1s linear infinite;}
   @keyframes spin{ to{ transform:rotate(360deg);} }
@@ -47,7 +47,7 @@
   .boxrow.highlight{ background:#fff3cd !important; }
   /* Modal */
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:2000;}
-  .modal{background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.2);width:520px;max-width:92vw;max-height:90vh;overflow:auto;padding:16px;}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.2);width:1000px;max-width:95vw;max-height:90vh;overflow:auto;padding:16px;}
   .modal h3{margin:0 0 8px 0;color:#1f2937;font-size:18px;}
   .modal .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px;}
   .modal .sampak-list{max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;background:#fff;}
@@ -87,6 +87,7 @@
 
 </style>
   <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js" defer></script>
+<script>window.dataLayer = window.dataLayer || [];</script>
 </head>
 <body>
 <div class="wrap">
@@ -136,6 +137,7 @@
         <div class="muted">Kassetyp(er)</div>
         <div class="bar">
           <button id="uploadCsvBtn" class="btn" type="button">📂 Upload CSV</button>
+          <button id="sampakBtn" class="btn" type="button">📦 Sampak</button>
           <button id="addBoxBtn" class="btn" type="button">➕ Tilføj kassetype</button>
           <button id="exportCsvBtn" class="btn" type="button" onclick="try{window.exportCsv && window.exportCsv()}catch(e){alert('Export-fejl: '+e.message)}">💾 Eksportér CSV</button>
         </div>
@@ -150,6 +152,7 @@
       <div class="bar">
         <button id="calcBtn" class="btn primary" type="button">Beregn pakning</button>
       </div>
+      
       <div class="hr"></div>
       <div class="bar" style="align-items:center;gap:12px">
         <div style="flex:1">
@@ -273,6 +276,9 @@ function num(x){
   let currentView = '3d';
   let selectedPallet = 0;
   let minSupport = 0.70;
+  
+  // Gør minSupport tilgængelig globalt så algoritmen kan bruge den
+  window.minSupport = minSupport;
 
   // 3D rotation + hover/klik
   let yaw = 0;
@@ -284,6 +290,11 @@ function num(x){
   const autoColor = i => COLOR_PALETTE[i % COLOR_PALETTE.length];
 
   const state = { boxTypes: [newBoxType()] };
+  
+  // Gør state tilgængelig globalt for test funktioner
+  window.state = state;
+  window.renderBoxList = renderBoxList;
+  
   function newBoxType(){
     return { name:"", L:0, B:0, H:0, weight:0, count:0, color:"", flatOnly:false, bottomRequired:false };
   }
@@ -395,6 +406,7 @@ function num(x){
   minSupportEl.addEventListener('input', ()=>{
     const v=parseInt(minSupportEl.value,10)||0;
     minSupport = Math.max(0,Math.min(100,v))/100;
+    window.minSupport = minSupport; // Opdater global variabel
     minSupportValEl.textContent = `${v}%`;
   });
 
@@ -465,7 +477,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
     }catch(_){ if (unplacedArea) unplacedArea.textContent = ''; }
   }
 
-  // clamp negative inputs and live-validate
+  // clamp negative inputs && live-validate
   boxList.addEventListener('input', () => {
     // Ensure state is sane
     state.boxTypes.forEach(bt => {
@@ -479,6 +491,50 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
 
   /* ====================== ALGORTIME: gammel Tetris + bund-fix ====================== */
   const EPS = 1e-6;
+        // Dynamic support demand based on box weight && placement height
+        const supportDemand = (weight, zTop) => {
+          // base tiers by weight
+          let base = 0.20; // light boxes
+          if (weight >= 2.5) base = 0.28;
+          if (weight >= 4.0) base = 0.34;
+          if (weight >= 6.0) base = 0.40;
+          // slightly relax demand higher up the stack (max -15% at top)
+          const relax = 1.0 - Math.min(0.15, (zTop / Math.max(1, palSpec.maxHeight)) * 0.15);
+          return Math.min(0.8, Math.max(window.minSupport || 0, base * relax));
+        };
+
+        // Forbedret sortering for optimal pakning - prioriterer kompakthed og lav højde
+        const sortBoxTypesForThisStep = () => {
+          return [...boxTypesInput].sort((a,b)=>{
+            // 1) Types where we still have items left come first
+            const ra = (remainingById[a.id]===Infinity || remainingById[a.id]>0) ? 0 : 1;
+            const rb = (remainingById[b.id]===Infinity || remainingById[b.id]>0) ? 0 : 1;
+            if (ra!==rb) return ra - rb;
+
+            // 2) Prioriter 'I bund' (bottomRequired) højest - disse skal i bunden
+            if (a.bottomRequired !== b.bottomRequired) {
+              return a.bottomRequired ? -1 : 1;
+            }
+
+            // 3) For 'I bund'-typer: større baseareal først (stabil base)
+            if (a.bottomRequired && b.bottomRequired) {
+              const ba = (a.length||a.l||0) * (a.width||a.w||0);
+              const bb = (b.length||b.l||0) * (b.width||b.w||0);
+              if (ba !== bb) return bb - ba;
+            }
+
+            // 4) Ellers: prioriter for kompakthed - højde først, derefter baseareal
+            const ha = (a.height||a.h||0), hb = (b.height||b.h||0);
+            if (hb !== ha) return hb - ha; // Højere kasser først for at minimere peak
+            
+            const ba = (a.length||a.l||0) * (a.width||a.w||0);
+            const bb = (b.length||b.l||0) * (b.width||b.w||0);
+            if (bb !== ba) return bb - ba; // Større baseareal først
+            
+            return (b.weight||0) - (a.weight||0);
+          });
+        };
+        
   const isDivisible = (a,b) => { if (b<=EPS) return false; const r=a%b; return r<=EPS || (b-r)<=EPS; };
 
   function orientationsFor(t) {
@@ -487,8 +543,14 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
         { l:t.length, w:t.width,  h:t.height },
         { l:t.width,  w:t.length, h:t.height },
       ];
-      // sort: lowest height first, then largest base area
-      return arr.sort((a,b)=> (a.h-b.h) || ((b.l*b.w)-(a.l*a.w)));
+      // sort: lowest height first, then largest base area, then best fit for pallet
+      return arr.sort((a,b)=> {
+        if (Math.abs(a.h - b.h) > EPS) return a.h - b.h; // Lavest højde først
+        const areaA = a.l * a.w, areaB = b.l * b.w;
+        if (Math.abs(areaB - areaA) > EPS) return areaB - areaA; // Største base først
+        // Hvis samme højde og base, vælg den der passer bedst på pallen
+        return 0;
+      });
     }
     const arr = [
       { l:t.length, w:t.width,  h:t.height },
@@ -498,8 +560,33 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       { l:t.height, w:t.length, h:t.width  },
       { l:t.height, w:t.width,  h:t.length },
     ];
-    return arr.sort((a,b)=> (a.h-b.h) || ((b.l*b.w)-(a.l*a.w)));
+    // Forbedret sortering: lavest højde, største base, bedste pallet-fit
+    return arr.sort((a,b)=> {
+      if (Math.abs(a.h - b.h) > EPS) return a.h - b.h; // Lavest højde først
+      const areaA = a.l * a.w, areaB = b.l * b.w;
+      if (Math.abs(areaB - areaA) > EPS) return areaB - areaA; // Største base først
+      // Hvis samme højde og base, prioriter den der giver bedst tetris-fit
+      return 0;
+    });
   }
+
+// --- cache wrapper for orientationsFor (non-invasive) ---
+(function(){
+  const __orientationCache = new Map();
+  const __orig_orientationsFor = orientationsFor;
+  orientationsFor = function(t){
+    try{
+      const key = `${t.length}x${t.width}x${t.height}|${t.flatOnly?'F':'A'}`;
+      if (__orientationCache.has(key)) return __orientationCache.get(key);
+      const res = __orig_orientationsFor(t);
+      __orientationCache.set(key, res);
+      return res;
+    }catch(e){
+      return __orig_orientationsFor(t);
+    }
+  };
+})();
+
 
   function planFirstFullLayer(pallet, boxTypesInput, remainingById, weightLeft){
     let best=null;
@@ -539,9 +626,9 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
   // >>>> FIXET bundpass – respekterer Antal og bryder når left==0
   function bottomPass({
     pallet, boxTypesInput, remainingById,
-    G, Nx, Ny, H, raiseRectTo, pal, weightLeftRef, hasGroundPlacement
+    G, Nx, Ny, H, raiseRectTo, pal, weightLeftRef, hasGroundPlacement, bottomColumnLocks
   }) {
-    const phases = [true, false]; // 1) kun “I bund”, 2) resten
+    const phases = [true, false]; // 1) kun "I bund", 2) resten
     let placedAny = false;
 
     const canPlaceAtGround = (ix,iy,w,l) => {
@@ -553,7 +640,10 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
 
     for (const onlyBottom of phases) {
       const types = boxTypesInput
-        .filter(t => (onlyBottom ? t.bottomRequired : !t.bottomRequired))
+        .filter(t => {
+          if (!t || typeof t.bottomRequired !== 'boolean') return false;
+          return onlyBottom ? t.bottomRequired === true : t.bottomRequired === false;
+        })
         .sort((a,b)=> (b.length*b.width*b.height) - (a.length*a.width*a.height));
 
       for (const t of types) {
@@ -573,12 +663,16 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
               if (!canPlaceAtGround(ix,iy,w,l)) continue;
               if (t.weight > weightLeftRef.value + EPS) continue;
 
+// Bottom-required boxes at ground don't need support check - they ARE the support
               // Placer
               raiseRectTo(ix,iy,w,l,o.h);
               pal.boxes.push({x: ix*G, y: iy*G, z: 0,
                 length: o.l, width: o.w, height: o.h,
                 typeId: t.id, color: t.color, name: t.name || t.id
               , weight: t.weight });
+              if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true) {
+                bottomColumnLocks.push({ ix, iy, w, l, typeId: t.id });
+              }
               hasGroundPlacement[t.id] = true;
               placedAny = true;
 
@@ -597,43 +691,387 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
     return placedAny;
   }
 
-  function optimizePackingTetris(palSpec, boxTypesInputRaw) {
-    const boxTypesInput = boxTypesInputRaw.slice().sort((a,b)=> (b.length*b.width*b.height) - (a.length*a.width*a.height));
-
-    const remainingById = {};
-    const hasGroundPlacement = {};
-    for (const t of boxTypesInput){
-      remainingById[t.id] = (t.count==null||isNaN(t.count)) ? Infinity : t.count;
-      hasGroundPlacement[t.id] = false;
+  // Helper function for lexicographic comparison
+  function lexLess(a,b){
+    try {
+      if (!a || !b) return false;
+      for (let i=0;i<Math.max(a.length,b.length);i++){
+        const x=a[i]??0, y=b[i]??0;
+        if (x<y) return true; if (x>y) return false;
+      }
+      return false;
+    } catch (error) {
+      console.error('Error in lexLess:', error);
+      return false;
     }
+  }
 
-    const pallets = [];
-    const G = 1; // cm grid
-    const Nx = Math.round(palSpec.length / G);
-    const Ny = Math.round(palSpec.width  / G);
+  function optimizePackingTetris(palSpec, boxTypesInputRaw) {
+    try {
+      // Valider input data
+      if (!palSpec || !boxTypesInputRaw || !Array.isArray(boxTypesInputRaw)) {
+        console.error('Invalid input to optimizePackingTetris:', { palSpec, boxTypesInputRaw });
+        return { pallets: [], boxes: [] };
+      }
+      
+      // Filtrer og valider box types
+      const validBoxTypes = boxTypesInputRaw.filter(t => {
+        if (!t) return false;
+        
+        // Valider nødvendige felter
+        const hasValidDimensions = typeof t.length === 'number' && 
+                                 typeof t.width === 'number' && 
+                                 typeof t.height === 'number' && 
+                                 typeof t.weight === 'number' && 
+                                 t.length > 0 && t.width > 0 && t.height > 0 && t.weight > 0;
+        
+        // Valider bottomRequired property
+        const hasValidBottomRequired = typeof t.bottomRequired === 'boolean';
+        
+        // Log advarsler for ugyldige properties
+        if (!hasValidDimensions) {
+          console.warn('Box type has invalid dimensions:', t);
+        }
+        if (!hasValidBottomRequired) {
+          console.warn('Box type has invalid bottomRequired property:', t);
+          // Sæt default værdi
+          t.bottomRequired = false;
+        }
+        
+        return hasValidDimensions && hasValidBottomRequired;
+      });
+      
+      if (validBoxTypes.length === 0) {
+        console.error('No valid box types found');
+        return { pallets: [], boxes: [] };
+      }
+      
+      const boxTypesInput = validBoxTypes.sort((a,b)=> (b.length*b.width*b.height) - (a.length*a.width*a.height));
+
+      const remainingById = {};
+      const hasGroundPlacement = {};
+      for (const t of boxTypesInput){
+        remainingById[t.id] = (t.count==null||isNaN(t.count)) ? Infinity : t.count;
+        hasGroundPlacement[t.id] = false;
+      }
+
+          // Valider pallet specifikationer
+      if (!palSpec.length || !palSpec.width || !palSpec.maxHeight || !palSpec.maxWeight) {
+        console.error('Invalid pallet specifications:', palSpec);
+        return { pallets: [], boxes: [] };
+      }
+      
+      const pallets = [];
+      const G = 2; // cm grid
+      const Nx = Math.round(palSpec.length / G);
+      const Ny = Math.round(palSpec.width  / G);
+      
+      // Tjek om grid er gyldigt
+      if (Nx <= 0 || Ny <= 0) {
+        console.error('Invalid grid dimensions:', { Nx, Ny, length: palSpec.length, width: palSpec.width });
+        return { pallets: [], boxes: [] };
+      }
 
     const stillBoxesLeft = () => boxTypesInput.some(t => remainingById[t.id]===Infinity || remainingById[t.id]>0);
 
+    // Performance optimeringer
+    const startTime = Date.now();
+    const TIMEOUT_MS = 30000; // 30 sekunder timeout
+    let iterationCount = 0;
+    const MAX_ITERATIONS = 10000;
+    
+    // Scoring cache for at undgå gentagne beregninger
+    const scoringCache = new Map();
+    
     while (stillBoxesLeft()) {
+      // Timeout check - more aggressive
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        console.warn("⚠️ Algoritme timeout efter 30 sekunder - afbryder pakning");
+        // Return current progress instead of empty result
+        if (pallets.length > 0) {
+          console.log(`📦 Returnerer ${pallets.length} paller med ${pallets.reduce((sum, p) => sum + p.boxes.length, 0)} kasser`);
+          return { pallets, boxes: [] };
+        }
+        return { pallets: [], boxes: [] };
+      }
+      
+      // Iteration limit check
+      if (++iterationCount > MAX_ITERATIONS) {
+        console.warn("⚠️ Maksimalt antal iterationer nået - afbryder pakning");
+        break;
+      }
+      
       const pal = { boxes:[], palletLength:palSpec.length, palletWidth:palSpec.width, layerHeights:[] };
       pallets.push(pal);
 
       let weightLeft = palSpec.maxWeight;
-      const H = Array.from({length:Nx}, ()=>Array(Ny).fill(0)); // højde pr. celle
+      const H = Array.from({length:Nx}, ()=>Array(Ny).fill(0));
+    const bottomColumnLocks = [];
+    const overlapsLock = (ix,iy,w,l, L) => !(ix + w <= L.ix || L.ix + L.w <= ix || iy + l <= L.iy || L.iy + L.l <= iy);
+     // højde pr. celle
+    // === Dynamic helpers (scoped to this run) ===
+    const supportDemand = (weight, zTop) => {
+      // base tiers by weight
+      let base = 0.20; // light boxes
+      if (weight >= 2.5) base = 0.28;
+      if (weight >= 4.0) base = 0.34;
+      if (weight >= 6.0) base = 0.40;
+      // slightly relax demand higher up the stack (max -15% at top)
+      const relax = 1.0 - Math.min(0.15, (zTop / Math.max(1, palSpec.maxHeight)) * 0.15);
+      return Math.min(0.8, Math.max(window.minSupport || 0, base * relax));
+    };
+
+        const sortBoxTypesForThisStep = () => {
+      try {
+        return [...boxTypesInput].sort((a,b)=>{
+          // Valider input
+          if (!a || !b) return 0;
+          
+          // 1) Types where we still have items left come first
+          const ra = (remainingById[a.id]===Infinity || remainingById[a.id]>0) ? 0 : 1;
+          const rb = (remainingById[b.id]===Infinity || remainingById[b.id]>0) ? 0 : 1;
+          if (ra!==rb) return ra - rb;
+
+          // 2) Prioriter 'I bund' (bottomRequired) moderat - ikke tving dem til at blive først
+          const aBottom = a && typeof a.bottomRequired === 'boolean' && a.bottomRequired === true;
+          const bBottom = b && typeof b.bottomRequired === 'boolean' && b.bottomRequired === true;
+          if (aBottom !== bBottom) {
+            // Reducer prioritering af "I bund" - lad dem konkurrere med andre kasser
+            return aBottom ? -0.5 : 0.5;
+          }
+
+          // 3) For 'I bund'-typer: større baseareal først (stabil base)
+          if (aBottom && bBottom) {
+            const ba = (a.length||a.l||0) * (a.width||a.w||0);
+            const bb = (b.length||b.l||0) * (b.width||b.w||0);
+            if (ba !== bb) return bb - ba;
+          }
+
+          // 4) Prioriter kompakthed: lav højde først, derefter volumen
+          const ha = (a.height||a.h||0), hb = (b.height||b.h||0);
+          if (hb !== ha) return ha - hb; // Lav højde først for bedre kompakthed
+          
+          const va = (a.length||a.l||0) * (a.width||a.w||0) * (a.height||a.h||0);
+          const vb = (b.length||b.l||0) * (b.width||b.w||0) * (b.height||b.h||0);
+          if (vb !== va) return vb - va;
+          
+          return (b.weight||0) - (a.weight||0);
+        });
+      } catch (error) {
+        console.error('Error in sortBoxTypesForThisStep:', error);
+        return [...boxTypesInput]; // Returner uændret ved fejl
+      }
+    };
+
 
       const areaSumUnder = (ix,iy,w,l) => { let s=0; for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) s+=H[x][y]; return s; };
       const maxUnder     = (ix,iy,w,l) => { let m=0; for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) if (H[x][y]>m) m=H[x][y]; return m; };
-      const supportRatioAtTop = (ix,iy,w,l,top) => { let c=0, cells=w*l; for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) if (H[x][y]===top) c++; return c/cells; };
+      const supportRatioAtTop = (ix,iy,w,l,top) => {
+      let c = 0, cells = w*l;
+      const needed = Math.ceil(cells * (window.minSupport || 0.7));
+      for (let x = ix; x < ix + w; x++) {
+        for (let y = iy; y < iy + l; y++) {
+          if (Math.abs(H[x][y] - top) <= EPS) {
+            c++;
+            if (c >= needed) return needed / cells;
+          }
+        }
+      }
+      return c / cells;
+    };
+      // Average height on 1-cell border around a candidate footprint
+      const borderAvgAround = (ix,iy,w,l) => {
+        let sum = 0, n = 0;
+        const x0 = Math.max(0, ix-1), x1 = Math.min(Nx-1, ix+w);
+        const y0 = Math.max(0, iy-1), y1 = Math.min(Ny-1, iy+l);
+        for (let x=x0; x<=x1; x++){
+          for (let y=y0; y<=y1; y++){
+            const onBorder = (x < ix || x >= ix+w || y < iy || y >= iy+l);
+            if (onBorder){ sum += H[x][y]; n++; }
+          }
+        }
+        return n ? sum/n : 0;
+      };
       const hMaxAll      = () => { let m=0; for (let x=0; x<Nx; x++) for (let y=0; y<Ny; y++) if (H[x][y]>m) m=H[x][y]; return m; };
       const hMinAll      = () => { let m=Infinity; for (let x=0; x<Nx; x++) for (let y=0; y<Ny; y++) if (H[x][y]<m) m=H[x][y]; return m; };
       const raiseRectTo  = (ix,iy,w,l,newTop) => { for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) H[x][y]=newTop; };
 
-      // (1) Bund-pass
+      // Helper: is there any bottomRequired box directly under this footprint at height `top`?
+      const hasBottomRequiredUnderAt = (ix, iy, w, l, top) => {
+        try {
+          // Valider input parametre
+          if (typeof ix !== 'number' || typeof iy !== 'number' || typeof w !== 'number' || typeof l !== 'number' || typeof top !== 'number') {
+            console.warn('Invalid parameters to hasBottomRequiredUnderAt:', { ix, iy, w, l, top });
+            return false;
+          }
+          
+          // Tjek om pal er defineret og har boxes
+          if (!pal || !pal.boxes || !Array.isArray(pal.boxes)) {
+            return false;
+          }
+          
+          // Tjek om boxTypesInput er defineret
+          if (!boxTypesInput || !Array.isArray(boxTypesInput)) {
+            console.warn('boxTypesInput is not defined or not an array');
+            return false;
+          }
+          
+          for (let x = ix; x < ix + w; x++) {
+            for (let y = iy; y < iy + l; y++) {
+              const boxUnder = pal.boxes.find(b => {
+                if (!b || typeof b.x !== 'number' || typeof b.y !== 'number') return false;
+                const bx = Math.round(b.x / G);
+                const by = Math.round(b.y / G);
+                const bw = Math.round(b.length / G);
+                const bl = Math.round(b.width / G);
+                return bx <= x && x < bx + bw && by <= y && y < by + bl && Math.abs((b.z + b.height) - top) < EPS;
+              });
+              if (boxUnder) {
+                const typeUnder = boxTypesInput.find(tu => tu.id === boxUnder.typeId);
+                if (typeUnder && typeof typeUnder.bottomRequired === 'boolean' && typeUnder.bottomRequired === true) {
+                  return true;
+                }
+              }
+            }
+          }
+          return false;
+        } catch (error) {
+          console.error('Error in hasBottomRequiredUnderAt:', error);
+          return false; // Fallback: tillad placering hvis der er fejl
+        }
+      };
+
+      // (1) Forbedret bund-pass - prioriterer "I bund" kasser i bunden
       {
         const ref = { value: weightLeft };
+        
+        // Først: placer alle "I bund" kasser i bunden (z=0)
+        // Debug: log alle box types og deres bottomRequired status
+        console.log('Box types input:', boxTypesInput);
+        console.log('Box types with bottomRequired:', boxTypesInput.filter(t => t && t.bottomRequired));
+        
+        // Sorter dem efter størrelse (største først) for bedre stabilitet
+        const bottomRequiredTypes = boxTypesInput
+          .filter(t => {
+            // Bedre validering af bottomRequired property
+            if (!t) return false;
+            if (typeof t.bottomRequired !== 'boolean') {
+              console.warn('Box type has invalid bottomRequired property:', t);
+              return false;
+            }
+            return t.bottomRequired === true;
+          })
+          .sort((a, b) => {
+            try {
+              const areaA = (a.length||a.l||0) * (a.width||a.w||0);
+              const areaB = (b.length||b.l||0) * (b.width||b.w||0);
+              return areaB - areaA; // Største først
+            } catch (error) {
+              console.error('Error sorting bottomRequired types:', error);
+              return 0;
+            }
+          });
+        
+        console.log('Filtered bottomRequired types:', bottomRequiredTypes);
+        
+        for (const t of bottomRequiredTypes) {
+          try {
+            let left = remainingById[t.id];
+            if (!(left === Infinity || left > 0)) continue;
+            
+            for (const o of orientationsFor(t)) {
+              if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
+              if (o.h > palSpec.maxHeight + EPS) continue;
+              
+              const w = Math.round(o.l / G), l = Math.round(o.w / G);
+              let placed = false;
+              
+              // Find bedste bund-placering (minimere hul)
+              let bestPlacement = null;
+              for (let iy = 0; iy <= Ny - l; iy++) {
+                for (let ix = 0; ix <= Nx - w; ix++) {
+                  // Tjek om området er ledigt i bunden
+                  let canPlace = true;
+                  for (let x = ix; x < ix + w; x++) {
+                    for (let y = iy; y < iy + l; y++) {
+                      if (H[x][y] > EPS) {
+                        canPlace = false;
+                        break;
+                      }
+                    }
+                    if (!canPlace) break;
+                  }
+                  
+                  if (canPlace) {
+                    // Beregn hvor godt denne placering er (minimere hul)
+                    let holeScore = 0;
+                    for (let x = Math.max(0, ix-1); x <= Math.min(Nx-1, ix+w); x++) {
+                      for (let y = Math.max(0, iy-1); y <= Math.min(Ny-1, iy+l); y++) {
+                        if (x < ix || x >= ix+w || y < iy || y >= iy+l) {
+                          if (H[x][y] > 0) holeScore += H[x][y];
+                        }
+                      }
+                    }
+                    
+                    if (!bestPlacement || holeScore < bestPlacement.holeScore) {
+                      bestPlacement = { ix, iy, holeScore };
+                    }
+                  }
+                }
+              }
+              
+              if (bestPlacement && t.weight <= weightLeft + EPS) {
+                // Placer kassen
+                raiseRectTo(bestPlacement.ix, bestPlacement.iy, w, l, o.h);
+                
+                // Valider box objekt før tilføjelse
+                const newBox = {
+                  x: bestPlacement.ix*G, 
+                  y: bestPlacement.iy*G, 
+                  z: 0,
+                  length: o.l, 
+                  width: o.w, 
+                  height: o.h,
+                  typeId: t.id, 
+                  color: t.color || '#4F81BD', 
+                  name: t.name || t.id, 
+                  weight: t.weight || 0
+                };
+                
+                // Tjek om alle nødvendige felter er gyldige
+                if (typeof newBox.x === 'number' && typeof newBox.y === 'number' && 
+                    typeof newBox.length === 'number' && typeof newBox.width === 'number' && 
+                    typeof newBox.height === 'number') {
+                  pal.boxes.push(newBox);
+                } else {
+                  console.error('Invalid box object:', newBox);
+                  continue;
+                }
+                
+                bottomColumnLocks.push({ 
+                  ix: bestPlacement.ix, iy: bestPlacement.iy, 
+                  w, l, typeId: t.id 
+                });
+                hasGroundPlacement[t.id] = true;
+                weightLeft -= t.weight;
+                if (left !== Infinity) {
+                  left--;
+                  remainingById[t.id] = left;
+                }
+                placed = true;
+                break; // orientation loop
+              }
+            }
+          } catch (error) {
+            console.error('Error placing bottomRequired box:', t, error);
+            continue; // Skip denne kasse hvis der er fejl
+          }
+        }
+        
+        // Derefter: kald den oprindelige bottomPass for resten
         const didBottom = bottomPass({
           pallet: palSpec, boxTypesInput, remainingById,
-          G, Nx, Ny, H, raiseRectTo, pal, weightLeftRef: ref, hasGroundPlacement
+          G, Nx, Ny, H, raiseRectTo, pal, weightLeftRef: ref, hasGroundPlacement, bottomColumnLocks
         });
         weightLeft = ref.value;
 
@@ -668,27 +1106,37 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       // (2) Greedy tetris – minimer peak-højde først
       while (true) {
         let best = null;
+        const candList = [];
 
-        // Pre-scan: if any bottomRequired box can be placed at the current lowest layer,
-        // then restrict this iteration to ONLY such placements until they are exhausted.
+        // Forbedret lag-håndtering: tillad fleksibel placering for bedre kompakthed
         const minLayerTop = hMinAll();
         let hasBottomAtMinLayer = false;
-        outer_scan:
+        let hasAnyAtMinLayer = false;
+        
+        // Pre-scan: tjek om der er "I bund" kasser der KAN placeres på det laveste lag
+        // Men tving IKKE kun dem til at blive placeret der
         for (const tb of boxTypesInput) {
           const leftb = remainingById[tb.id];
           if (!(leftb===Infinity || leftb>0)) continue;
           if (!tb.bottomRequired) continue;
           if (tb.weight > weightLeft + EPS) continue;
+          
+          // Tjek om denne "I bund" kasse kan placeres på det laveste lag
           orientationsFor(tb).forEach(ob=>{
             if (ob.l > palSpec.length + EPS || ob.w > palSpec.width + EPS) return;
-            const w=ob.l, l=ob.w, h=ob.h;
+            const w = Math.round(ob.l / G), l = Math.round(ob.w / G); 
+            const h = ob.h;
             for (let ix=0; ix<=Nx - w; ix++) {
               for (let iy=0; iy<=Ny - l; iy++) {
                 const topB = maxUnder(ix,iy,w,l);
                 if (topB !== minLayerTop) continue;
-                const coverB = supportRatioAtTop(ix,iy,w,l,topB);
-                if (coverB < (minSupport||0)) continue;
+                const coverB = supportRatioAtTop(ix, iy, w, l, topB);
+                
+                // Special case: "I bund" boxes at ground level (z=0) should always be allowed
+                const isBottomRequiredAtGround = tb.bottomRequired && topB <= EPS;
+                if (!isBottomRequiredAtGround && coverB < (window.minSupport||0)) continue;
                 if (topB + h > palSpec.maxHeight + EPS) continue;
+                
                 hasBottomAtMinLayer = true;
                 return; // exit forEach
               }
@@ -696,8 +1144,39 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
           });
           if (hasBottomAtMinLayer) break;
         }
+        
+        // Tjek om der er nogen kasser der kan placeres på det laveste lag
+        for (const tb2 of boxTypesInput) {
+          const leftAny = remainingById[tb2.id];
+          if (!(leftAny===Infinity || leftAny>0)) continue;
+          if (tb2.weight > weightLeft + EPS) continue;
 
-        for (const t of boxTypesInput) {
+          orientationsFor(tb2).forEach(ob=>{
+            if (ob.l > palSpec.length + EPS || ob.w > palSpec.width + EPS) return;
+            const w2 = Math.round(ob.l / G), l2 = Math.round(ob.w / G);
+            const h2 = ob.h;
+            for (let ix2=0; ix2<=Nx - w2; ix2++) {
+              for (let iy2=0; iy2<=Ny - l2; iy2++) {
+                const top2 = maxUnder(ix2,iy2,w2,l2);
+                if (top2 !== minLayerTop) continue;
+                const cover2 = supportRatioAtTop(ix2, iy2, w2, l2, top2);
+                
+                // Special case: "I bund" boxes at ground level (z=0) should always be allowed
+                const isBottomRequiredAtGround = tb2.bottomRequired && top2 <= EPS;
+                if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
+                if (top2 + h2 > palSpec.maxHeight + EPS) continue;
+                
+                hasAnyAtMinLayer = true;
+                return; // exit forEach
+              }
+            }
+          });
+          if (hasAnyAtMinLayer) break;
+        }
+
+
+        const iterBoxTypes = sortBoxTypesForThisStep();
+        for (const t of iterBoxTypes) {
           const left = remainingById[t.id];
           if (!(left===Infinity || left>0)) continue;
           if (t.weight > weightLeft + EPS) continue;
@@ -708,18 +1187,82 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
             const h = o.h;
 
             for (let ix=0; ix<=Nx - w; ix++) {
+              // Timeout check in nested loops
+              if (Date.now() - startTime > TIMEOUT_MS) {
+                console.warn("⚠️ Algoritme timeout i main loop - afbryder pakning");
+                // Return current progress
+                if (pallets.length > 0) {
+                  return { pallets, boxes: [] };
+                }
+                return { pallets: [], boxes: [] };
+              }
               for (let iy=0; iy<=Ny - l; iy++) {
+                // Additional timeout check in innermost loop
+                if (Date.now() - startTime > TIMEOUT_MS) {
+                  console.warn("⚠️ Algoritme timeout i innermost loop - afbryder pakning");
+                  if (pallets.length > 0) {
+                    return { pallets, boxes: [] };
+                  }
+                  return { pallets: [], boxes: [] };
+                }
+                // Respekter 'I bund' kolonner: hvis et område er låst til en type, må kun samme type
+                // med samme footprint fortsætte i kolonnen
+                let violatesLock = false;
+                for (const L of bottomColumnLocks) {
+                  if (overlapsLock(ix,iy,w,l,L)) {
+                    if (!(ix===L.ix && iy===L.iy && w===L.w && l===L.l && t.id===L.typeId)) {
+                      violatesLock = true; break;
+                    }
+                  }
+                }
+                if (violatesLock) continue;
+
                 const top = maxUnder(ix,iy,w,l);
 
-                // If there exists any bottomRequired candidate at the current lowest layer,
-                // restrict placements to those until depleted.
-                if (hasBottomAtMinLayer && (!t.bottomRequired || top !== minLayerTop)) continue;
+                // Forbedret lag-håndtering: prioritér kompakte lag i stedet for tårne
+                // Prioriter "I bund" kasser på det laveste lag, men tillad også andre kasser
+                if (hasBottomAtMinLayer && t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top !== minLayerTop) {
+                  // "I bund" kasser skal helst på det laveste lag, men ikke tvinges
+                  continue;
+                }
+                
+                // STÆRKERE prioritet for kompakte lag: tving kasser til at fylde eksisterende lag før nye
+                if (hasAnyAtMinLayer && top !== minLayerTop) {
+                  // Prioriter det laveste lag - dette er kritisk for at undgå tårne
+                  continue;
+                }
+                
+                // NY: Ekstra check for at undgå tårne - hvis vi er mere end 30cm over det laveste lag, prioriter laveste
+                if (top > minLayerTop + 30) {
+                  continue; // Tving kasser til at fylde lavere lag først
+                }
 
-                if (t.bottomRequired && !hasGroundPlacement[t.id] && top > 0) continue;
+                // Regler for "I bund": bottomRequired må kun stå på palle eller oven på andre bottomRequired
+                if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
+                  const brUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
+                  if (!brUnder) continue;
+                }
+                
+                const cover = supportRatioAtTop(ix, iy, w, l, top);
+                
+                // Special case: "I bund" boxes at ground level (z=0) should always be allowed
+                // regardless of support requirements since they sit directly on the pallet
+                const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
 
-                const cover = supportRatioAtTop(ix,iy,w,l,top);
-                if (cover < (minSupport||0)) continue;
-                if (top + h > palSpec.maxHeight + EPS) continue;
+                // Definer hasBottomRequiredUnder variablen for brug i scoring
+                let hasBottomRequiredUnder = false;
+                if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > EPS) {
+                  hasBottomRequiredUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
+                }
+
+const isBottomRequiredStacked = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > EPS && hasBottomRequiredUnder;
+if (!isBottomRequiredAtGround && !isBottomRequiredStacked && cover < (window.minSupport||0)) continue;
+                // Streng højde validering - stop hvis vi overskrider max højde
+                if (top + h > palSpec.maxHeight + EPS) {
+                  const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+                  console.log(`⚠️ Kasse ${t.name || t.id} overskrider max højde: ${top + h}cm > ${palSpec.maxHeight}cm (${maxHeightSetting}cm - ${palSpec.baseHeight||0}cm base)`);
+                  continue;
+                }
                 if (t.weight > weightLeft + EPS) continue;
 
                 const peakAfter = Math.max(hMaxAll(), top + h);
@@ -727,15 +1270,80 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                 const fitBias = (isDivisible(palSpec.width, o.w) ? -0.5 : 0) + (isDivisible(palSpec.length, o.l) ? -0.5 : 0);
                 const divisibleBonus = (isDivisible(palSpec.length, o.l) && isDivisible(palSpec.width, o.w)) ? 1 : 0;
 
+                // Forbedret scoring for optimal kompakthed
                 const flatnessRatio = (h > EPS) ? (Math.max(o.l, o.w) / h) : 0;
                 const foundationBonus = (top === 0) ? (flatnessRatio * 5) : 0;
                 const baseAreaBonus = (top === 0) ? ((o.l * o.w) / 1000) : 0;
+                const localAvg = borderAvgAround(ix,iy,w,l);
+                const localRise = Math.max(0, (top + h) - Math.max(localAvg, top));
+                const tallEarlyBias = (top === minLayerTop) ? (-0.30 * h) : 0; // læg høje kasser tidligt på laget
+                const heightRisk = Math.max(0, h - (palSpec.maxHeight - hMaxAll())); // hvis vi nærmer os højdemax, prioriter høje nu
+                
+                // Kompaktheds-score: foretræk placeringer der minimerer hul og maksimerer lag-fyldning
+                const holeScore = (() => {
+                  let holes = 0;
+                  let totalCells = 0;
+                  for (let x = ix; x < ix + w; x++) {
+                    for (let y = iy; y < iy + l; y++) {
+                      totalCells++;
+                      if (H[x][y] < top) {
+                        holes += (top - H[x][y]);
+                      }
+                    }
+                  }
+                  
+                  // Stærkere bonus for at minimere hul - især hvis vi fylder hul
+                  const holeRatio = holes / (totalCells * top || 1);
+                  if (holeRatio > 0.8) return -holes * 1.5; // Stærk bonus for at fylde store hul
+                  if (holeRatio > 0.5) return -holes * 1.0; // Medium bonus
+                  return -holes * 0.5; // Standard bonus
+                })();
+                
+                const layerCompletion = (() => {
+                  // Hvor meget af laget fylder vi?
+                  const areaCovered = w * l;
+                  const totalArea = Nx * Ny;
+                  const completionRatio = areaCovered / totalArea;
+                  
+                  // Stærkere bonus for at fylde lag - især hvis vi fylder meget af laget
+                  if (completionRatio > 0.8) return 5.0; // Stærk bonus for at næsten fylde laget
+                  if (completionRatio > 0.5) return 3.0; // Medium bonus for at fylde halvdelen
+                  return completionRatio * 2.0; // Standard bonus
+                })();
+                
+                // Adaptive scoring weights baseret på pallet størrelse
+                const palletArea = palSpec.length * palSpec.width;
+                const isSmallPallet = palletArea < 5000; // kvartpalle
+                const isMediumPallet = palletArea < 10000; // halvpalle
+                
+                // Juster weights baseret på pallet type
+                const peakWeight = isSmallPallet ? 4.0 : isMediumPallet ? 3.5 : 3.0;
+                const compactWeight = isSmallPallet ? 2.0 : isMediumPallet ? 1.5 : 1.2;
+                const heightBias = isSmallPallet ? 0.15 : isMediumPallet ? 0.12 : 0.12;
+                const baseBonus = isSmallPallet ? 0.8 : isMediumPallet ? 0.6 : 0.4;
+                const tetrisWeight = isSmallPallet ? 1.5 : isMediumPallet ? 1.2 : 1.0;
+                
+                // Forbedret scoring: prioritér kompakte lag i stedet for tårne
                 const score = [
-                  0.5 * peakAfter - foundationBonus - baseAreaBonus,
-                  (addedVol + fitBias),
-                  -cover * 2,
-                  -divisibleBonus * 3,
-                  h * 0.1
+                  // Prioriter lav højde og kompakte lag
+                  peakWeight * peakAfter + compactWeight*localRise + 0.8*heightRisk - foundationBonus * baseBonus - baseAreaBonus * 0.4 + tallEarlyBias,
+                  holeScore + layerCompletion * tetrisWeight, // Kompaktheds-bonus
+                  (addedVol + fitBias) * 0.5,
+                  -cover * 2.2,
+                  -divisibleBonus * 3.0,
+                  h * heightBias,
+                  // Bonus for "I bund" kasser i bunden (reduceret fra 5.0 til 2.0)
+                  (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top === 0) ? 2.0 : 0,
+                  // Bonus for bedste orientering (lavest højde, største base)
+                  -h * 0.05 + (o.l * o.w) * 0.001,
+                  // STÆRKERE bonus for kompakt placering - prioritér horisontale lag
+                  -(top + h) * 0.8, // Øget fra 0.3 til 0.8
+                  // STÆRKERE bonus for at holde sig tæt på bunden
+                  -top * 0.5, // Øget fra 0.2 til 0.5
+                  // NY: Stærk bonus for at fylde eksisterende lag før nye
+                  (top === minLayerTop) ? -5.0 : 0, // Stærk bonus for at fylde laveste lag
+                  // NY: Penalty for at lave tårne (høje placeringer)
+                  (top > minLayerTop + 20) ? (top - minLayerTop) * 0.1 : 0
                 ];
 
                 if (!best || lexLess(score, best.score)) {
@@ -746,16 +1354,439 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
           });
         }
 
+        
+        // One-step lookahead on top candidates to avoid leaving tall boxes last
+        if (candList.length > 1) {
+          // Adaptive lookahead baseret på kompleksitet
+          const palletArea = palSpec.length * palSpec.width;
+          const isComplexScenario = boxTypesInput.length > 8 || palletArea < 5000;
+          
+          // Juster antal kandidater baseret på kompleksitet
+          const K = isComplexScenario ? Math.min(6, candList.length) : Math.min(12, candList.length);
+          const sorted = [...candList].sort((a,b)=> lexLess(a.score,b.score) ? -1 : 1).slice(0,K);
+          let bestWithLA = best, bestEval = Infinity;
+          const snapH = (grid) => grid.reduce((mx,row)=>Math.max(mx,...row), 0);
+          for (const c of sorted) {
+            // simulate placement c on a shallow copy of H
+            const Hsim = H.map(col => col.slice());
+            for (let x=c.ix; x<c.ix+c.w; x++) for (let y=c.iy; y<c.iy+c.l; y++) Hsim[x][y] = c.top + c.h;
+            // greedily try place the biggest remaining box after c (coarse check)
+            let laPenalty = Math.max(hMaxAll(), c.top + c.h);
+            // Try a handful of the biggest boxes - reducer for komplekse scenarier
+            const lookaheadLimit = isComplexScenario ? 2 : 4;
+            const bigs = sortBoxTypesForThisStep().slice(0, lookaheadLimit);
+            let placedLA = false;
+            for (const tb of bigs) {
+              if (tb.id===c.t.id && (remainingById[tb.id]||0)<=1) continue;
+              for (const ob of orientationsFor(tb)) {
+                const w2 = Math.round(ob.l / G), l2 = Math.round(ob.w / G), h2 = ob.h;
+                for (let ix2=0; ix2<=Nx - w2; ix2++) for (let iy2=0; iy2<=Ny - l2; iy2++) {
+                  let top2 = 0; for (let x=ix2; x<ix2+w2; x++) for (let y=iy2; y<iy2+l2; y++) top2 = Math.max(top2, Hsim[x][y]);
+                  const cover2 = supportRatioAtTop(ix2,iy2,w2,l2,top2);
+// Exempt 'I bund' at ground and unify threshold with slider
+const isBottomRequiredAtGround2 = tb && typeof tb.bottomRequired === 'boolean' && tb.bottomRequired === true && top2 <= EPS;
+const demand2 = Math.max((window.minSupport||0), supportDemand(tb.weight||0, top2));
+                  if (!isBottomRequiredAtGround2 && cover2 < demand2) continue;
+                  // Streng højde validering i lookahead
+                  if (top2 + h2 > palSpec.maxHeight + EPS) {
+                    const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+                    console.log(`⚠️ Lookahead: Kasse ${tb.name || tb.id} overskrider max højde: ${top2 + h2}cm > ${palSpec.maxHeight}cm (${maxHeightSetting}cm - ${palSpec.baseHeight||0}cm base)`);
+                    continue;
+                  }
+                  // I bund-regler i lookahead: bottomRequired kræver bottomRequired under (normal må godt stå på bund)
+                  if (tb && typeof tb.bottomRequired === 'boolean' && tb.bottomRequired === true && top2 > 0) {
+                    const brUnder2 = hasBottomRequiredUnderAt(ix2, iy2, w2, l2, top2);
+                    if (!brUnder2) continue;
+                  }
+                  const localAvg2 = borderAvgAround(ix2,iy2,w2,l2);
+                  const localRise2 = Math.max(0, (top2 + h2) - Math.max(localAvg2, top2));
+                  const peakAfter2 = Math.max(laPenalty, top2 + h2);
+                  
+                  // Adaptive scoring for lookahead baseret på pallet størrelse
+                  const palletArea2 = palSpec.length * palSpec.width;
+                  const isSmallPallet2 = palletArea2 < 5000;
+                  const compactWeight2 = isSmallPallet2 ? 1.0 : isMediumPallet2 ? 0.8 : 0.8;
+                  
+                  const evalScore = peakAfter2 + compactWeight2*localRise2; // cheap eval
+                  if (evalScore < laPenalty) { laPenalty = evalScore; placedLA = true; }
+                }
+              }
+            }
+            const finalEval = laPenalty;
+            if (finalEval < bestEval) { bestEval = finalEval; bestWithLA = c; }
+          }
+          best = bestWithLA || best;
+        }
+    
+        if (!best) {
+          // Second pass: ignore layer gating && try any legal placement before opening a new pallet
+          let best2 = null;
+          for (const t2 of boxTypesInput) {
+            const left2 = remainingById[t2.id];
+            if (!(left2===Infinity || left2>0)) continue;
+            if (t2.weight > weightLeft + EPS) continue;
+            for (const o2 of orientationsFor(t2)) {
+              if (o2.l > palSpec.length + EPS || o2.w > palSpec.width + EPS) continue;
+              const w2 = Math.round(o2.l / G), l2 = Math.round(o2.w / G), h2 = o2.h;
+              for (let ix2 = 0; ix2 <= Nx - w2; ix2++) {
+                // Timeout check in second pass loop
+                if (Date.now() - startTime > TIMEOUT_MS) {
+                  console.warn("⚠️ Algoritme timeout i second pass loop - afbryder pakning");
+                  if (pallets.length > 0) {
+                    return { pallets, boxes: [] };
+                  }
+                  return { pallets: [], boxes: [] };
+                }
+                for (let iy2 = 0; iy2 <= Ny - l2; iy2++) {
+                  const top2 = maxUnder(ix2,iy2,w2,l2);
+                  const cover2 = supportRatioAtTop(ix2, iy2, w2, l2, top2);
+// Special case: "I bund" boxes at ground level (z=0) should always be allowed
+// regardless of support requirements since they sit directly on the pallet
+                  const isBottomRequiredAtGround = t2 && typeof t2.bottomRequired === 'boolean' && t2.bottomRequired === true && top2 <= EPS;
+                  if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
+                  // I bund-regler i second pass: bottomRequired kræver bottomRequired under
+                  if (t2 && typeof t2.bottomRequired === 'boolean' && t2.bottomRequired === true && top2 > 0) {
+                    const brUnder2 = hasBottomRequiredUnderAt(ix2, iy2, w2, l2, top2);
+                    if (!brUnder2) continue;
+                  }
+                  // Streng højde validering i second pass
+                  if (top2 + h2 > palSpec.maxHeight + EPS) {
+                    const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+                    console.log(`⚠️ Second pass: Kasse ${t2.name || t2.id} overskrider max højde: ${(top2 + h2).toFixed(1)}cm > ${palSpec.maxHeight}cm (${maxHeightSetting}cm - ${palSpec.baseHeight||0}cm base)`);
+                    continue;
+                  }
+                  const addedVol2 = o2.l * o2.w * o2.h;
+                  const peakAfter2 = Math.max(hMaxAll(), top2 + h2);
+                  const fitBias2 = (top2===0 ? 50 : 0);
+                  const divisibleBonus2 = (isDivisible(palSpec.length, o2.l) && isDivisible(palSpec.width, o2.w)) ? 1 : 0;
+                  const flatnessRatio2 = (h2 > EPS) ? (Math.max(o2.l, o2.w) / h2) : 0;
+                  const foundationBonus2 = (top2 === 0) ? (flatnessRatio2 * 5) : 0;
+                  const baseAreaBonus2 = (o2.l * o2.w) / (palSpec.length * palSpec.width);
+                  const localAvg2 = borderAvgAround(ix2,iy2,w2,l2);
+                  const localRise2 = Math.max(0, (top2 + h2) - Math.max(localAvg2, top2));
+                  const heightRisk2 = Math.max(0, h2 - (palSpec.maxHeight - hMaxAll()));
+                  const tallEarlyBias2 = (top2 === minLayerTop) ? (-0.30 * h2) : 0;
+                  const score2 = [
+                    3.0 * peakAfter2 + 1.2*localRise2 + 0.8*heightRisk2 - foundationBonus2 * 0.6 - baseAreaBonus2 * 0.4 + tallEarlyBias2,
+                    (addedVol2 + fitBias2) * 0.5,
+                    -cover2 * 2.2,
+                    -divisibleBonus2 * 3.0,
+                    h2 * 0.12,
+                    // Stærkere bonus for kompakt placering i first second pass
+                    -(top2 + h2) * 0.25,
+                    -top2 * 0.15
+                  ];
+                  if (!best2 || lexLess(score2, best2.score)) {
+                    best2 = { t:t2, o:o2, ix:ix2, iy:iy2, w:w2, l:l2, h:h2, top:top2, score:score2 };
+                  }
+                }
+              }
+            }
+          }
+          if (best2) best = best2;
+        }
+        if (!best) {
+          // Second pass: ignore layer gating && try any legal placement before opening a new pallet
+          let best2 = null;
+          for (const t2 of sortBoxTypesForThisStep()) {
+            const left2 = remainingById[t2.id];
+            if (!(left2===Infinity || left2>0)) continue;
+            if (t2.weight > weightLeft + EPS) continue;
+            for (const o2 of orientationsFor(t2)) {
+              if (o2.l > palSpec.length + EPS || o2.w > palSpec.width + EPS) continue;
+              const w2 = Math.round(o2.l / G), l2 = Math.round(o2.w / G), h2 = o2.h;
+              for (let ix2 = 0; ix2 <= Nx - w2; ix2++) {
+                for (let iy2 = 0; iy2 <= Ny - l2; iy2++) {
+                  const top2 = maxUnder(ix2,iy2,w2,l2);
+                  const cover2 = supportRatioAtTop(ix2, iy2, w2, l2, top2);
+// Special case: "I bund" boxes at ground level (z=0) should always be allowed
+// regardless of support requirements since they sit directly on the pallet
+                  const isBottomRequiredAtGround = t2 && typeof t2.bottomRequired === 'boolean' && t2.bottomRequired === true && top2 <= EPS;
+if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
+                  if (top2 + h2 > palSpec.maxHeight + EPS) continue;
+                  const addedVol2 = o2.l * o2.w * o2.h;
+                  const peakAfter2 = Math.max(hMaxAll(), top2 + h2);
+                  const fitBias2 = (top2===0 ? 50 : 0);
+                  const divisibleBonus2 = (isDivisible(palSpec.length, o2.l) && isDivisible(palSpec.width, o2.w)) ? 1 : 0;
+                  const flatnessRatio2 = (h2 > EPS) ? (Math.max(o2.l, o2.w) / h2) : 0;
+                  const foundationBonus2 = (top2 === 0) ? (flatnessRatio2 * 5) : 0;
+                  const baseAreaBonus2 = (o2.l * o2.w) / (palSpec.length * palSpec.width);
+                  const localAvg2 = borderAvgAround(ix2,iy2,w2,l2);
+                  const localRise2 = Math.max(0, (top2 + h2) - Math.max(localAvg2, top2));
+                  const heightRisk2 = Math.max(0, h2 - (palSpec.maxHeight - hMaxAll()));
+                  const tallEarlyBias2 = (top2 === minLayerTop) ? (-0.30 * h2) : 0;
+                  const score2 = [
+                    3.0 * peakAfter2 + 1.2*localRise2 + 0.8*heightRisk2 - foundationBonus2 * 0.6 - baseAreaBonus2 * 0.4 + tallEarlyBias2,
+                    (addedVol2 + fitBias2) * 0.5,
+                    -cover2 * 2.2,
+                    -divisibleBonus2 * 3.0,
+                    h2 * 0.12,
+                    // Stærkere bonus for kompakt placering i second second pass
+                    -(top2 + h2) * 0.25,
+                    -top2 * 0.15
+                  ];
+                  if (!best2 || lexLess(score2, best2.score)) {
+                    best2 = { t:o2.t||t2, o:o2, ix:ix2, iy:iy2, w:w2, l:l2, h:h2, top:top2, score:score2 };
+                  }
+                }
+              }
+            }
+          }
+          if (best2) best = best2;
+        }
+
+        // Third pass: SOFT 'I bund' fallback — allow first-of-type 'I bund' boxes to start on a fully-supported plateau
+        if (!best) {
+          let best3 = null;
+          for (const t3 of sortBoxTypesForThisStep()) {
+            const left3 = remainingById[t3.id];
+            if (!(left3===Infinity || left3>0)) continue;
+            if (!t3 || typeof t3.bottomRequired !== 'boolean' || !t3.bottomRequired || hasGroundPlacement[t3.id]) continue; // only first-of-type 'I bund'
+            if (t3.weight > weightLeft + EPS) continue;
+            for (const o3 of orientationsFor(t3)) {
+              if (o3.l > palSpec.length + EPS || o3.w > palSpec.width + EPS) continue;
+              const w3 = Math.round(o3.l / G), l3 = Math.round(o3.w / G), h3 = o3.h;
+              for (let ix3 = 0; ix3 <= Nx - w3; ix3++) {
+                // Timeout check in third pass loop
+                if (Date.now() - startTime > TIMEOUT_MS) {
+                  console.warn("⚠️ Algoritme timeout i third pass loop - afbryder pakning");
+                  if (pallets.length > 0) {
+                    return { pallets, boxes: [] };
+                  }
+                  return { pallets: [], boxes: [] };
+                }
+                for (let iy3 = 0; iy3 <= Ny - l3; iy3++) {
+                  const top3 = maxUnder(ix3,iy3,w3,l3);
+                  const cover3 = supportRatioAtTop(ix3, iy3, w3, l3, top3);
+// Special case: "I bund" boxes at ground level (z=0) should always be allowed
+// regardless of support requirements since they sit directly on the pallet
+                  const isBottomRequiredAtGround = t3 && typeof t3.bottomRequired === 'boolean' && t3.bottomRequired === true && top3 <= EPS;
+                  if (!isBottomRequiredAtGround && cover3 < 0.98) continue; // kræv næsten fuld støtte
+                  // Streng højde validering i third pass
+                  if (top3 + h3 > palSpec.maxHeight + EPS) {
+                    const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+                    console.log(`⚠️ Third pass: Kasse ${t3.name || t3.id} overskrider max højde: ${top3 + h3}cm > ${palSpec.maxHeight}cm (${maxHeightSetting}cm - ${palSpec.baseHeight||0}cm base)`);
+                    continue;
+                  }
+                  const localAvg3 = borderAvgAround(ix3,iy3,w3,l3);
+                  const localRise3 = Math.max(0, (top3 + h3) - Math.max(localAvg3, top3));
+                  const peakAfter3 = Math.max(hMaxAll(), top3 + h3);
+                  const score3 = [
+                    3.0 * peakAfter3 + 1.0*localRise3,
+                    -(o3.l * o3.w * o3.h),
+                    // Stærkere bonus for kompakt placering i third pass
+                    -(top3 + h3) * 0.3,
+                    -top3 * 0.2
+                  ];
+                  if (!best3 || lexLess(score3, best3.score)) {
+                    best3 = { t:t3, o:o3, ix:ix3, iy:iy3, w:w3, l:l3, h:h3, top:top3, score:score3, softBottom:true };
+                  }
+                }
+              }
+            }
+          }
+          if (best3) best = best3;
+        }
+
         if (!best) break;
 
+        // Tjek om placering af denne kasse vil overskride max højde
         const newTop = best.top + best.h;
+        if (newTop > palSpec.maxHeight + EPS) {
+          const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+          console.log(`⚠️ Kan ikke placere kasse - overskrider max højde ${palSpec.maxHeight}cm (${maxHeightSetting}cm - ${palSpec.baseHeight||0}cm base). Starter ny pallet.`);
+          break; // Stop denne pallet og start ny
+        }
+
+        // Placer kassen
         for (let x=best.ix; x<best.ix+best.w; x++) for (let y=best.iy; y<best.iy+best.l; y++) H[x][y]=newTop;
         weightLeft -= best.t.weight;
         if (remainingById[best.t.id] !== Infinity) remainingById[best.t.id]--;
         if (best.top === 0) hasGroundPlacement[best.t.id] = true;
 
         pal.boxes.push({ x: best.ix*G, y: best.iy*G, z: best.top, length: best.o.l, width: best.o.w, height: best.o.h, typeId: best.t.id, color: best.t.color, name: best.t.name||best.t.id , weight: best.t.weight });
-        if (weightLeft <= EPS) break;
+        
+        // Tjek om vi skal stoppe denne pallet
+        if (weightLeft <= EPS || newTop >= palSpec.maxHeight - EPS) {
+          console.log(`📦 Pallet ${pallets.length} fuld - højde: ${newTop.toFixed(1)}cm, vægt: ${(palSpec.maxWeight - weightLeft).toFixed(1)}kg`);
+          break;
+        }
+      }
+
+      // === Single-pallet aggressive repack fallback (only once per pallet) ===
+      if (stillBoxesLeft && typeof stillBoxesLeft==='function') {
+        // compute total remaining finite count
+        let remSum = 0;
+        for (const t of boxTypesInput) if (remainingById[t.id] !== Infinity) remSum += Math.max(0, remainingById[t.id]||0);
+        if (remSum > 0 && pal.boxes.length > 0) {
+          // Count already placed per type on this pallet
+          const placedCounts = {};
+          for (const b of pal.boxes) placedCounts[b.typeId] = (placedCounts[b.typeId]||0) + 1;
+
+          // Build target counts (placed + remaining) we will try to repack on this one pallet
+          const targetCounts = {};
+          for (const t of boxTypesInput) {
+            const left = remainingById[t.id];
+            if (left === Infinity) continue;
+            targetCounts[t.id] = (left||0) + (placedCounts[t.id]||0);
+          }
+          const totalTarget = Object.values(targetCounts).reduce((a,b)=>a+b,0);
+
+          // Backup current state
+          const backupBoxes = pal.boxes.slice();
+          const Hbackup = H.map(col=>col.slice());
+          const weightBackup = weightLeft;
+
+          // Reset grid + boxes
+          for (let x=0; x<Nx; x++) for (let y=0; y<Ny; y++) H[x][y]=0;
+          pal.boxes = [];
+          weightLeft = palSpec.maxWeight;
+
+          // Create an array of box instances according to targetCounts
+          const instances = [];
+          for (const t of [...boxTypesInput].sort((a,b)=> (b.l*b.w*b.h) - (a.l*a.w*a.h))) {
+            const cnt = targetCounts[t.id]||0;
+            for (let i=0;i<cnt;i++) instances.push(t);
+          }
+
+          let repackOK = true;
+
+          // ---- PHASE A: fill ground layer first (top==0) to avoid hollow base ----
+          const remaining = [];
+          for (const t of instances) {
+            let placed = false;
+            for (const o of orientationsFor(t)) {
+              if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
+              const w = Math.round(o.l / G), l = Math.round(o.w / G), h = o.h;
+              let best = null;
+              for (let ix=0; ix<=Nx - w; ix++) {
+                // Timeout check in repack phase A loop
+                if (Date.now() - startTime > TIMEOUT_MS) {
+                  console.warn("⚠️ Algoritme timeout i repack phase A loop - afbryder pakning");
+                  if (pallets.length > 0) {
+                    return { pallets, boxes: [] };
+                  }
+                  return { pallets: [], boxes: [] };
+                }
+                for (let iy=0; iy<=Ny - l; iy++) {
+                  // require ground
+                  let top = 0; 
+                  for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) if (H[x][y]>top) top=H[x][y];
+                  if (top > 0 + EPS) continue;
+                  // Streng højde validering i repack fase A
+                  if (top + h > palSpec.maxHeight + EPS) {
+                    const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+                    console.log(`⚠️ Repack A: Kasse ${t.name || t.id} overskrider max højde: ${top + h}cm > ${palSpec.maxHeight}cm (${maxHeightSetting}cm - ${palSpec.baseHeight||0}cm base)`);
+                    continue;
+                  }
+                  const cover = supportRatioAtTop(ix, iy, w, l, top);
+                  // Special case: "I bund" boxes at ground level (z=0) should always be allowed
+                  // regardless of support requirements since they sit directly on the pallet
+                  const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
+                  if (!isBottomRequiredAtGround && cover < (window.minSupport||0)) continue;
+                  if (t.weight > weightLeft + EPS) continue;
+                  // I bund-regler i repack fase B
+                  if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
+                    const brUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
+                    if (!brUnder) continue;
+                  }
+                  // prefer larger base area && more bottom-left
+                  const score = [ 
+                    -(o.l*o.w), // Største base først
+                    ix, // Venstre først
+                    iy, // Bund først
+                    -top * 0.1 // Bonus for lav placering
+                  ];
+                  if (!best || score[0] < best.score[0] || (score[0]===best.score[0] && (score[1] < best.score[1] || (score[1]===best.score[1] && score[2]<best.score[2])))) {
+                    best = {ix,iy,w,l,h,o,t,top,score};
+                  }
+                }
+              }
+              if (best) {
+                for (let x=best.ix; x<best.ix+best.w; x++) for (let y=best.iy; y<best.iy+best.l; y++) H[x][y]=best.top + best.h;
+                pal.boxes.push({ x: best.ix*G, y: best.iy*G, z: best.top,
+                  length: best.o.l, width: best.o.w, height: best.o.h,
+                  typeId: best.t.id, color: best.t.color, name: best.t.name||best.t.id, weight: best.t.weight
+                });
+                weightLeft -= (best.t.weight||0);
+                placed = true;
+                break; // orientation loop
+              }
+            }
+            if (!placed) remaining.push(t);
+          }
+
+          // ---- PHASE B: place remaining anywhere (bottom-left min-height) ----
+          for (const t of remaining) {
+            let best = null;
+            for (const o of orientationsFor(t)) {
+              if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
+              const w = Math.round(o.l / G), l = Math.round(o.w / G), h = o.h;
+              for (let ix=0; ix<=Nx - w; ix++) {
+                // Timeout check in repack phase B loop
+                if (Date.now() - startTime > TIMEOUT_MS) {
+                  console.warn("⚠️ Algoritme timeout i repack phase B loop - afbryder pakning");
+                  if (pallets.length > 0) {
+                    return { pallets, boxes: [] };
+                  }
+                  return { pallets: [], boxes: [] };
+                }
+                for (let iy=0; iy<=Ny - l; iy++) {
+                  // compute top from H
+                  let top = 0; for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) if (H[x][y]>top) top=H[x][y];
+                  // Streng højde validering i repack fase B
+                  if (top + h > palSpec.maxHeight + EPS) {
+                    const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+                    console.log(`⚠️ Repack B: Kasse ${t.name || t.id} overskrider max højde: ${top + h}cm > ${palSpec.maxHeight}cm (${maxHeightSetting}cm - ${palSpec.baseHeight||0}cm base)`);
+                    continue;
+                  }
+                  // support at this top
+                  const cover = supportRatioAtTop(ix, iy, w, l, top);
+                  // Special case: "I bund" boxes at ground level (z=0) should always be allowed
+                  // regardless of support requirements since they sit directly on the pallet
+                  const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
+                  if (!isBottomRequiredAtGround && cover < (window.minSupport||0)) continue;
+                  if (t.weight > weightLeft + EPS) continue;
+                  // I bund-regler i repack fase B (fortsat)
+                  if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
+                    const brUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
+                    if (!brUnder) continue;
+                  }
+                  const peakAfter = Math.max(top + h, Math.max(0, ...H.flat()));
+                  const score = [ 
+                    top, // Lavest top først
+                    peakAfter, // Lavest peak derefter
+                    - (o.l*o.w), // Største base derefter
+                    -top * 0.2 // Bonus for lav placering
+                  ]; // prefer lowest top, then lowest peak, then largest base
+                  if (!best || score[0] < best.score[0] ||
+                      (score[0]===best.score[0] && (score[1] < best.score[1] ||
+                       (score[1]===best.score[1] && score[2] < best.score[2])))) {
+                    best = {ix,iy,w,l,h,o,t,top,score};
+                  }
+                }
+              }
+            }
+            if (!best) { repackOK = false; break; }
+            // place
+            for (let x=best.ix; x<best.ix+best.w; x++) for (let y=best.iy; y<best.iy+best.l; y++) H[x][y]=best.top + best.h;
+            pal.boxes.push({ x: best.ix*G, y: best.iy*G, z: best.top,
+              length: best.o.l, width: best.o.w, height: best.o.h,
+              typeId: best.t.id, color: best.t.color, name: best.t.name||best.t.id, weight: best.t.weight
+            });
+            weightLeft -= (best.t.weight||0);
+          }
+
+          if (repackOK && pal.boxes.length === totalTarget) {
+            // success: clear remainingById for finite counts
+            for (const t of boxTypesInput) if (remainingById[t.id] !== Infinity) remainingById[t.id] = 0;
+          } else {
+            // revert
+            for (let x=0; x<Nx; x++) for (let y=0; y<Ny; y++) H[x][y]=Hbackup[x][y];
+            pal.boxes = backupBoxes;
+            weightLeft = weightBackup;
+          }
+        }
       }
 
       // lag-info
@@ -764,28 +1795,105 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       pal.boxes.forEach(b => b.layer = zToLayer.get(b.z));
       pal.layerHeights = zLevels.map(z=>{ let mh=0; for (const b of pal.boxes) if (b.z===z) mh=Math.max(mh, b.height); return mh; });
       pal.totalHeight = Math.max(0, ...H.flat());
+      
+      // Log pallet status
+      console.log(`📦 Pallet ${pallets.length} færdig: ${pal.boxes.length} kasser, højde: ${pal.totalHeight.toFixed(1)}cm, vægt: ${(palSpec.maxWeight - weightLeft).toFixed(1)}kg`);
+      
+      // Tjek om vi skal starte en ny pallet
+      // Start ny pallet hvis der er kasser tilbage OG den nuværende pallet er fuld
+      const isCurrentPalletFull = (weightLeft <= EPS) || (pal.totalHeight >= palSpec.maxHeight - EPS);
+      if (stillBoxesLeft() && isCurrentPalletFull) {
+        console.log(`🔄 Starter ny pallet - nuværende pallet er fuld (vægt: ${(palSpec.maxWeight - weightLeft).toFixed(1)}kg/${palSpec.maxWeight}kg, højde: ${pal.totalHeight.toFixed(1)}cm/${palSpec.maxHeight}cm)`);
+        continue; // Start ny pallet i while loop
+      } else if (stillBoxesLeft() && !isCurrentPalletFull) {
+        console.log(`🔄 Starter ny pallet - kan ikke pakke flere kasser på nuværende pallet (vægt: ${(palSpec.maxWeight - weightLeft).toFixed(1)}kg/${palSpec.maxWeight}kg, højde: ${pal.totalHeight.toFixed(1)}cm/${palSpec.maxHeight}cm)`);
+        continue; // Start ny pallet i stedet for at stoppe
+      }
     }
 
-    const all = []; for (const p of pallets) for (const b of p.boxes) all.push(b);
-    return { pallets, boxes: all };
-
-    function lexLess(a,b){
-      for (let i=0;i<Math.max(a.length,b.length);i++){
-        const x=a[i]??0, y=b[i]??0;
-        if (x<y) return true; if (x>y) return false;
+      const all = []; for (const p of pallets) for (const b of p.boxes) all.push(b);
+      
+          // Valider resultater
+    const totalBoxes = all.length;
+    const totalVolume = all.reduce((sum, box) => sum + ((box.L || box.length) * (box.B || box.width) * (box.H || box.height)), 0);
+    
+    // Valider "I bund" compliance
+    const bottomRequiredBoxes = all.filter(box => {
+      const boxType = boxTypesInput.find(t => t.id === box.typeId);
+      return boxType && boxType.bottomRequired === true;
+    });
+    
+    let bottomRequiredCompliance = true;
+    let complianceWarnings = [];
+    
+    for (const box of bottomRequiredBoxes) {
+      const boxType = boxTypesInput.find(t => t.id === box.typeId);
+      if (boxType && boxType.bottomRequired === true) {
+        const z = box.z || 0;
+        if (z > EPS) {
+          // Tjek om der er en "I bund" kasse under
+          const hasBottomRequiredUnder = all.some(otherBox => {
+            if (otherBox.typeId === box.typeId) return false; // Ikke samme type
+            const otherBoxType = boxTypesInput.find(t => t.id === otherBox.typeId);
+            if (!otherBoxType || otherBoxType.bottomRequired !== true) return false;
+            
+            // Tjek om denne kasse er under den aktuelle
+            const otherZ = otherBox.z || 0;
+            const otherHeight = otherBox.height || otherBox.H || 0;
+            return otherZ < z && (otherZ + otherHeight) >= z;
+          });
+          
+          if (!hasBottomRequiredUnder) {
+            const warning = `⚠️ "I bund" kasse ${box.name || box.typeId} placeret på højde ${z}cm uden "I bund" kasse under`;
+            console.warn(warning);
+            complianceWarnings.push(warning);
+            bottomRequiredCompliance = false;
+          }
+        }
       }
-      return false;
+    }
+    
+    // Log compliance status
+    if (complianceWarnings.length > 0) {
+      console.log(`🔍 "I bund" compliance: ${complianceWarnings.length} advarsler`);
+      complianceWarnings.forEach(warning => console.log(`   ${warning}`));
+    } else {
+      console.log(`✅ "I bund" compliance: OK`);
+    }
+    
+    console.log(`✅ Pakning gennemført: ${totalBoxes} kasser, ${totalVolume.toFixed(0)} cm³`);
+    console.log(`⏱️ Kørte i ${Date.now() - startTime}ms med ${iterationCount} iterationer`);
+    console.log(`🔍 "I bund" compliance: ${bottomRequiredCompliance ? 'OK' : 'ADVARSEL'}`);
+    
+    // Log pallet statistik
+    console.log(`📊 Pallet statistik:`);
+    pallets.forEach((pal, index) => {
+      const palHeight = pal.totalHeight || 0;
+      const palWeight = pal.boxes.reduce((sum, b) => sum + (b.weight || 0), 0);
+      console.log(`   Pallet ${index + 1}: ${pal.boxes.length} kasser, højde: ${palHeight.toFixed(1)}cm, vægt: ${palWeight.toFixed(1)}kg`);
+    });
+    
+    return { pallets, boxes: all };
+    } catch (error) {
+      console.error('Fejl i optimizePackingTetris:', error);
+      console.error('Stack trace:', error.stack);
+      
+      // Returner tom pakning hvis der er fejl
+      return { 
+        pallets: [{ boxes: [], palletLength: palSpec.length, palletWidth: palSpec.width, layerHeights: [] }], 
+        boxes: [] 
+      };
     }
   }
 
   
 function tryFullGridOverride(pal, boxTypesInput, packing){
-  // Only consider override when exactly ONE active type and it tiles perfectly.
+  // Only consider override when exactly ONE active type && it tiles perfectly.
   const active = boxTypesInput.filter(t => (t.count===Infinity || t.count>0));
   if (active.length !== 1) return null;
   const t = active[0];
 
-  // Find a perfect tiling orientation (tiles both L and B exactly)
+  // Find a perfect tiling orientation (tiles both L && B exactly)
   let best=null;
   for (const o of orientationsFor(t)) {
     if (o.l>pal.length+EPS || o.w>pal.width+EPS) continue;
@@ -860,7 +1968,7 @@ function tryFullGridOverride(pal, boxTypesInput, packing){
     ctx.strokeRect(PAD, PAD, L*scale, B*scale);
     const vis = boxes.filter(b => b.z <= sliceZ + 1e-6);
     for (const b of vis){
-      ctx.fillStyle = b.color || '#4F81BD';
+      ctx.fillStyle = (!window._hlType || ((b.name||'').trim()===window._hlType)) ? (b.color || '#4F81BD') : '#E5E7EB';
       ctx.fillRect(PAD + b.x*scale, PAD + b.y*scale, b.length*scale, b.width*scale);
       ctx.strokeStyle = 'rgba(0,0,0,.2)';
       ctx.strokeRect(PAD + b.x*scale, PAD + b.y*scale, b.length*scale, b.width*scale);
@@ -910,7 +2018,7 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
 
       // Top deck slats (5)
       const slats = 5;
-      // pick a reasonable slat width and even gaps
+      // pick a reasonable slat width && even gaps
       let slatW = Math.min(B/(slats*1.25), B*0.18);
       const totalW = slatW*slats;
       const gap = (B - totalW) / (slats-1);
@@ -936,7 +2044,7 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
       for(const F of faces){ ctx.beginPath(); ctx.moveTo(F.pts[0].x,F.pts[0].y); for(let i=1;i<F.pts.length;i++) ctx.lineTo(F.pts[i].x,F.pts[i].y); ctx.closePath(); ctx.fillStyle=F.fill; ctx.strokeStyle=F.stroke; ctx.lineWidth=1.05; ctx.fill(); ctx.stroke(); }
     }
 
-    // ground top and slice plane
+    // ground top && slice plane
     (function(){
       const p=[proj(0,0,0),proj(L,0,0),proj(L,B,0),proj(0,B,0)];
       ctx.beginPath(); ctx.moveTo(p[0].x,p[0].y); for(let i=1;i<p.length;i++) ctx.lineTo(p[i].x,p[i].y); ctx.closePath();
@@ -955,7 +2063,7 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
                 proj(x,y,z+h), proj(x+l,y,z+h), proj(x+l,y+w,z+h), proj(x,y+w,z+h) ];
       hitPolys.push({box:b, poly:[{x:P[0].x,y:P[0].y},{x:P[1].x,y:P[1].y},{x:P[2].x,y:P[2].y},{x:P[3].x,y:P[3].y}]});
       hitBoxes.push({box:b, poly:[{x:P[0].x,y:P[0].y},{x:P[1].x,y:P[1].y},{x:P[2].x,y:P[2].y},{x:P[3].x,y:P[3].y}]});
-      const base = b.color || '#60a5fa';
+      const base = (!window._hlType || ((b.name||'').trim()===window._hlType)) ? (b.color || '#60a5fa') : '#E5E7EB';
       const tint=(hex,k)=>{ const s=hex.replace('#',''); const r=parseInt(s.slice(0,2),16), g=parseInt(s.slice(2,4),16), bl=parseInt(s.slice(4,6),16);
         const f=v=>Math.max(0,Math.min(255,Math.round(v*k))); return `rgb(${f(r)},${f(g)},${f(bl)})`; };
       const polys=[ {idx:[4,5,6,7],k:1.04},{idx:[1,2,6,5],k:0.96},{idx:[2,3,7,6],k:0.90},{idx:[0,1,5,4],k:0.86},{idx:[0,3,7,4],k:0.82},{idx:[0,1,2,3],k:0.78} ];
@@ -1044,16 +2152,20 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
   function showModal(html){
     const root = document.getElementById('modalRoot');
     root.innerHTML = `<div class="modal-overlay"><div class="modal">${html}</div></div>`;
-    root.querySelector('.modal-overlay').addEventListener('click', (ev) => {
-      if (ev.target.classList.contains('modal-overlay')) closeModal();
-    });
+    // Fjernet: modal lukker IKKE når man klikker udenfor
+    // Modal kan kun lukkes via knapperne (Spring over, Bekræft, etc.)
   }
-  function closeModal(){ document.getElementById('modalRoot').innerHTML = ''; }
+  function closeModal(){ 
+    document.getElementById('modalRoot').innerHTML = ''; 
+  }
+  
+  // Gør closeModal globalt tilgængelig
+  window.closeModal = closeModal;
 
   function showAddReplaceModal(parsed){
     const html = `
       <h3>Håndtering af nye kasser</h3>
-      <p>Der findes allerede kasser i listen. Hvad vil du gøre?</p>
+      <p>Der findes allerede ${state.boxTypes.filter(b => b.L>0 || b.B>0 || b.H>0 || b.weight>0 || b.count>0 || (b.name||"").trim()).length} kasser i listen. Hvad vil du gøre?</p>
       <div class="actions">
         <button class="btn" type="button" id="ar-cancel">Annullér</button>
         <button class="btn" type="button" id="ar-add">Tilføj til eksisterende</button>
@@ -1061,8 +2173,8 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
       </div>`;
     showModal(html);
     document.getElementById('ar-cancel').onclick = closeModal;
-    document.getElementById('ar-add').onclick = () => { closeModal(); showSampakModal(parsed, 'add'); };
-    document.getElementById('ar-replace').onclick = () => { closeModal(); showSampakModal(parsed, 'replace'); };
+    document.getElementById('ar-add').onclick = () => { closeModal(); applyImport(parsed, 'add', {selectedIdx:[], overboxes:[], notElig:[]}); };
+    document.getElementById('ar-replace').onclick = () => { closeModal(); applyImport(parsed, 'replace', {selectedIdx:[], overboxes:[], notElig:[]}); };
   }
 
   function toPackingTypes(selection){
@@ -1088,20 +2200,70 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
     return { name:names, L:Math.round(L), B:Math.round(B), H:Math.round(Ht), weight:+Wt.toFixed(2) };
   }
 
-  function packPreview(sel, limits){
+  function packPreview(sel, limits, thicknessSettings = {}){
     const {maxL,maxB,maxH,maxW} = limits;
+    const { sideThickness = 0.5, bottomThickness = 0.5, topThickness = 0.5 } = thicknessSettings;
     const eligible = []; const notElig = [];
-    sel.forEach(b => { if (b.L<=maxL && b.B<=maxB && b.H<=maxH && b.weight<=maxW) eligible.push({...b}); else notElig.push({...b}); });
+    
+    sel.forEach(b => { 
+      // Beregn ydre mål baseret på indre mål og kasse tykkelse
+      const outerL = b.L + (2 * sideThickness);
+      const outerB = b.B + (2 * sideThickness);
+      const outerH = b.H + bottomThickness + topThickness;
+      
+      if (outerL<=maxL && outerB<=maxB && outerH<=maxH && b.weight<=maxW) {
+        // Opret navn array med alle kasser
+        const names = [];
+        for (let i = 0; i < b.count; i++) {
+          names.push(b.name);
+        }
+        
+        eligible.push({
+          ...b,
+          name: names.join(', '),  // Navn med alle kasser
+          L: outerL,  // Ydre mål bliver de faktiske mål for overkassen
+          B: outerB,  // Ydre mål bliver de faktiske mål for overkassen
+          H: outerH,  // Ydre mål bliver de faktiske mål for overkassen
+          // Gem oprindelige indre mål for reference
+          originalInnerL: b.L,
+          originalInnerB: b.B,
+          originalInnerH: b.H,
+          originalNames: names,  // Gem oprindelige navne
+          sideThickness,
+          bottomThickness,
+          topThickness
+        });
+      } else {
+        notElig.push({...b});
+      }
+    });
+    
     if (eligible.length===0) return {overboxes:[], notElig, totalUnits: sel.reduce((s,b)=>s+b.count,0)};
     const palSpec = { length:maxL, width:maxB, maxHeight:maxH, maxWeight:maxW };
-    const packing = optimizePackingTetris(palSpec, toPackingTypes(eligible));
+    let packing;
+try {
+  packing = optimizePackingTetris(palSpec, toPackingTypes(eligible));
+} catch (error) {
+  console.error('Fejl i optimizePackingTetris kald:', error);
+  console.error('Stack trace:', error.stack);
+  packing = { pallets: [], boxes: [] };
+}
     const overboxes = packing.pallets.map(p => perPalletStatsForOverbox(p, maxL, maxB, maxH));
     const totalUnits = sel.reduce((s,b)=> s + (b.count||0), 0);
     return { overboxes, notElig, totalUnits };
   }
-  const packSelected = (sel, limits) => packPreview(sel, limits);
+  const packSelected = (sel, limits, thicknessSettings) => packPreview(sel, limits, thicknessSettings);
 
   function showSampakModal(parsed, mode){
+    // Tilpas titel og beskrivelse baseret på mode
+    const modeInfo = {
+      'add': { title: 'Sampak - Tilføj til eksisterende', desc: 'Vælg de varer der må pakkes sammen til overkasser. Disse vil blive tilføjet til eksisterende kasser.' },
+      'replace': { title: 'Sampak - Erstat alle', desc: 'Vælg de varer der må pakkes sammen til overkasser. Disse vil erstatte alle eksisterende kasser.' },
+      'sampak': { title: 'Sampak - Eksisterende kasser', desc: 'Vælg de eksisterende kasser der må pakkes sammen til overkasser.' }
+    };
+    
+    const info = modeInfo[mode] || modeInfo['sampak'];
+    
     const list = parsed.map((b, i) => `
       <label class="sampak-item">
         <input type="checkbox" class="sampak-check" data-ix="${i}">
@@ -1110,36 +2272,762 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
         <span class="mono">– ${b.weight} kg × ${b.count}</span>
       </label>`).join('');
     const html = `
-      <h3>Sampak (valgfrit)</h3>
-      <p>Vælg de varer der må pakkes sammen til overkasser. Angiv maks-mål og vægt pr. overkasse.</p>
-      <div class="sampak-list">${list}</div>
-      <div class="row">
-        <div><label>Maks L (cm)</label><input id="sp-maxL" type="number" value="50" min="1"></div>
-        <div><label>Maks B (cm)</label><input id="sp-maxB" type="number" value="50" min="1"></div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h3 style="margin: 0;">${info.title}</h3>
+        <button type="button" onclick="closeModal()" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #6b7280; padding: 4px; border-radius: 4px;" title="Luk">&times;</button>
       </div>
-      <div class="row">
-        <div><label>Maks H (cm)</label><input id="sp-maxH" type="number" value="50" min="1"></div>
-        <div><label>Maks vægt (kg)</label><input id="sp-maxW" type="number" value="20" min="0.1" step="0.1"></div>
+      
+      <!-- To kolonner layout -->
+      <div style="display: flex; gap: 20px; min-height: 500px;">
+        
+        <!-- Venstre kolonne: Indstillinger -->
+        <div style="flex: 1; min-width: 400px;">
+          <p>${info.desc} Angiv maks-mål og vægt pr. overkasse.</p>
+          <div class="sampak-list">${list}</div>
+          <div class="row">
+            <div><label>Maks L (cm)</label><input id="sp-maxL" type="number" value="50" min="1"></div>
+            <div><label>Maks B (cm)</label><input id="sp-maxB" type="number" value="50" min="1"></div>
+          </div>
+          <div class="row">
+            <div><label>Maks H (cm)</label><input id="sp-maxH" type="number" value="50" min="1"></div>
+            <div><label>Maks vægt (kg)</label><input id="sp-maxW" type="number" value="20" min="0.1" step="0.1"></div>
+          </div>
+          <div class="row">
+            <div><label>Kasse tykkelse (cm)</label><input id="sp-wallThickness" type="number" value="0.5" min="0" step="0.1"></div>
+            <div><label>Custom tykkelse</label><input type="checkbox" id="sp-customThickness"></div>
+          </div>
+          <div id="sp-customThicknessSection" style="display:none;">
+            <div class="row">
+              <div><label>Side tykkelse (cm)</label><input id="sp-sideThickness" type="number" value="0.5" min="0" step="0.1"></div>
+              <div><label>Bund tykkelse (cm)</label><input id="sp-bottomThickness" type="number" value="0.8" min="0" step="0.1"></div>
+            </div>
+            <div class="row">
+              <div><label>Top tykkelse (cm)</label><input id="sp-topThickness" type="number" value="0.5" min="0" step="0.1"></div>
+              <div></div>
+            </div>
+          </div>
+          <div class="info" id="sp-live">Ingen valgt endnu.</div>
+          
+          <!-- Preview liste -->
+          <div id="sp-visualization" style="display:none; margin-top: 12px;">
+            <h4 style="margin:0 0 8px 0; font-size:14px; color:#374151;">Forhåndsvisning af overkasser:</h4>
+            <div id="sp-preview-list" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:8px; max-height:80px; overflow-y:auto;"></div>
+          </div>
+        </div>
+        
+        <!-- Højre kolonne: 3D Visning -->
+        <div style="flex: 1; min-width: 400px;">
+          <h4 style="margin:0 0 12px 0; font-size:16px; color:#374151;">3D Visning:</h4>
+          
+          <!-- Controls -->
+          <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+            <div style="flex: 1;">
+              <label style="font-size: 12px; color: #6b7280;">Vinkel (°)</label>
+              <input id="sp-angle" type="range" min="0" max="60" value="30" style="width: 100%;">
+            </div>
+            <div style="flex: 1;">
+              <label style="font-size: 12px; color: #6b7280;">Snit (cm) – vis op til højde</label>
+              <input id="sp-cut" type="range" min="1" max="50" value="50" style="width: 100%;">
+            </div>
+          </div>
+          
+          <!-- Overkasse faner (ligesom normal visning) -->
+          <div style="display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;" id="sp-overbox-tabs"></div>
+          
+          <!-- Info display -->
+          <div style="display: flex; gap: 16px; margin-bottom: 12px; font-size: 12px; color: #6b7280;">
+            <span id="sp-info-height">Højde: - cm</span>
+            <span id="sp-info-weight">Vægt: - kg</span>
+          </div>
+
+          <!-- 3D Canvas -->
+          <div style="height: 320px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; background: #f8fafc;">
+            <canvas id="sp-3d-canvas" style="width: 100%; height: 100%; cursor: grab;"></canvas>
+          </div>
+          
+          <!-- Kompakt forhåndsvisning under canvas -->
+          <div id="sp-visualization" style="display:none; margin-top: 8px;">
+            <details style="border:1px solid #e2e8f0; border-radius:6px; background:#f8fafc;">
+              <summary style="padding:6px 8px; font-size:12px; color:#6b7280; cursor:pointer;">Detaljer for valgte overkasse</summary>
+              <div id="sp-preview-list" style="padding:8px; max-height:120px; overflow-y:auto; font-size:12px;"></div>
+            </details>
+          </div>
+        </div>
       </div>
-      <div class="info" id="sp-live">Ingen valgt endnu.</div>
-      <div class="actions">
+      
+      <!-- Actions nederst -->
+      <div class="actions" style="margin-top: 16px;">
         <button class="btn" type="button" id="sp-skip">Spring over</button>
         <button class="btn primary" type="button" id="sp-ok">Bekræft sampak</button>
       </div>`;
     showModal(html);
+    
+    // Setup canvas mouse events for rotation
+    setupSampakCanvasEvents();
+    
+    // Gem overboxes globalt så de kan opdateres
+    window._sampakOverboxes = [];
+
+    // Event listener for custom tykkelse checkbox
+    document.getElementById('sp-customThickness').addEventListener('change', function() {
+      const customSection = document.getElementById('sp-customThicknessSection');
+      if (this.checked) {
+        customSection.style.display = 'block';
+      } else {
+        customSection.style.display = 'none';
+      }
+      simulatePack(); // Opdater live preview
+    });
+
+    // Event listeners for tykkelse inputs
+    ['sp-wallThickness', 'sp-sideThickness', 'sp-bottomThickness', 'sp-topThickness'].forEach(id => {
+      document.getElementById(id).addEventListener('input', simulatePack);
+    });
+    
+    // Event listeners for 3D controls
+    document.getElementById('sp-angle').addEventListener('input', e => {
+      spAngle = parseInt(e.target.value, 10) || 30;
+      pitch = -(spAngle * Math.PI / 180); // Opdater global pitch
+      
+      const canvas = document.getElementById('sp-3d-canvas');
+      if (canvas && window._sampakOverboxes && window._sampakOverboxes[spSelectedOverbox]) {
+        drawSampak3D(canvas, [window._sampakOverboxes[spSelectedOverbox]]);
+      }
+    });
+    
+    document.getElementById('sp-cut').addEventListener('input', e => {
+      spCutHeight = parseInt(e.target.value, 10) || 0;
+      
+      const canvas = document.getElementById('sp-3d-canvas');
+      if (canvas && window._sampakOverboxes && window._sampakOverboxes[spSelectedOverbox]) {
+        drawSampak3D(canvas, [window._sampakOverboxes[spSelectedOverbox]]);
+      }
+    });
+    
+    // Event listener for window resize (opdater 3D canvas)
+    window.addEventListener('resize', () => {
+      const canvas = document.getElementById('sp-3d-canvas');
+      if (canvas && canvas.style.display !== 'none') {
+        // Re-trigger simulatePack to redraw 3D
+        setTimeout(simulatePack, 100);
+      }
+    });
+    
+    // Drag functionality for rotation
+    function spStartDrag(event) {
+      spIsDragging = true;
+      spDragStart = { x: event.clientX, y: event.clientY };
+      event.preventDefault();
+    }
+    
+    function spDrag(event) {
+      if (!spIsDragging || !spDragStart) return;
+      
+      const deltaX = event.clientX - spDragStart.x;
+      spRotation += deltaX * 0.5; // Rotation sensitivity
+      
+      spDragStart = { x: event.clientX, y: event.clientY };
+      
+      const canvas = document.getElementById('sp-3d-canvas');
+      if (canvas) {
+        const overboxes = getCurrentSampakOverboxes();
+        if (overboxes) drawSampak3D(canvas, overboxes);
+      }
+    }
+    
+    function spEndDrag(event) {
+      spIsDragging = false;
+      spDragStart = null;
+    }
+    
+    // Add event listeners for 3D controls inde i modal
+    setTimeout(() => {
+      const angleSlider = document.getElementById('sp-angle');
+      if (angleSlider) {
+        angleSlider.addEventListener('input', (e) => {
+          spAngle = parseInt(e.target.value);
+          const canvas = document.getElementById('sp-3d-canvas');
+          if (canvas) {
+            const overboxes = getCurrentSampakOverboxes();
+            drawSampak3D(canvas, overboxes);
+          }
+        });
+      }
+      
+      const cutSlider = document.getElementById('sp-cut');
+      if (cutSlider) {
+        cutSlider.addEventListener('input', (e) => {
+          spCutHeight = parseInt(e.target.value);
+          const canvas = document.getElementById('sp-3d-canvas');
+          if (canvas) {
+            const overboxes = getCurrentSampakOverboxes();
+            drawSampak3D(canvas, overboxes);
+          }
+        });
+      }
+      
+      // Canvas drag events
+      const canvas = document.getElementById('sp-3d-canvas');
+      if (canvas) {
+        canvas.addEventListener('mousedown', spStartDrag);
+        canvas.addEventListener('mousemove', spDrag);
+        canvas.addEventListener('mouseup', spEndDrag);
+        canvas.addEventListener('mouseleave', spEndDrag);
+        
+        // Tegn initial 3D visning straks
+        const overboxes = getCurrentSampakOverboxes();
+        drawSampak3D(canvas, overboxes);
+      }
+    }, 100);
+    
+    // Get current overboxes for redrawing
+    function getCurrentSampakOverboxes() {
+      const idxs = getSelectedIdx();
+      if (idxs.length === 0) return [];
+      
+      const sel = idxs.map(i => parsed[i]);
+      const limits = {
+        maxL: parseFloat(document.getElementById('sp-maxL').value),
+        maxB: parseFloat(document.getElementById('sp-maxB').value),
+        maxH: parseFloat(document.getElementById('sp-maxH').value),
+        maxW: parseFloat(document.getElementById('sp-maxW').value)
+      };
+      
+      const thicknessSettings = getThicknessSettings();
+      const result = handleExistingSampak(sel, limits, thicknessSettings);
+      return result ? result.overboxes || [] : [];
+    }
+    
+    // Get thickness settings
+    function getThicknessSettings() {
+      const customThickness = document.getElementById('sp-customThickness').checked;
+      if (customThickness) {
+        return {
+          sideThickness: parseFloat(document.getElementById('sp-sideThickness').value),
+          bottomThickness: parseFloat(document.getElementById('sp-bottomThickness').value),
+          topThickness: parseFloat(document.getElementById('sp-topThickness').value)
+        };
+      } else {
+        const wallThickness = parseFloat(document.getElementById('sp-wallThickness').value);
+        return {
+          sideThickness: wallThickness,
+          bottomThickness: wallThickness,
+          topThickness: wallThickness
+        };
+      }
+    }
 
     const getSelectedIdx = () => Array.from(document.querySelectorAll('.sampak-check:checked')).map(ch => parseInt(ch.dataset.ix,10));
+    
+    // Funktion til at vise forhåndsvisning af overkasser
+    function showSampakPreview(overboxes) {
+      const previewContainer = document.getElementById('sp-preview-list');
+      const visualizationContainer = document.getElementById('sp-visualization');
+      const tabsContainer = document.getElementById('sp-overbox-tabs');
+      const canvas = document.getElementById('sp-3d-canvas');
+      
+      if (!overboxes || !Array.isArray(overboxes) || overboxes.length === 0) {
+        visualizationContainer.style.display = 'none';
+        if (tabsContainer) tabsContainer.innerHTML = '';
+        // Vis tom 3D canvas med besked
+        if (canvas) {
+          drawSampak3D(canvas, []);
+        }
+        return;
+      }
+      
+      // Gem overboxes globalt så de kan bruges til rotation
+      window._sampakOverboxes = overboxes;
+      
+      // Sørg for at selectedOverbox er gyldig
+      if (spSelectedOverbox >= overboxes.length) spSelectedOverbox = 0;
+      
+      // Opret faner (ligesom normal visning)
+      if (tabsContainer) {
+        tabsContainer.innerHTML = '';
+        overboxes.forEach((ob, i) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'pallet-tab' + (i === spSelectedOverbox ? ' active' : '');
+          btn.textContent = `Overkasse ${i + 1}`;
+          btn.style.cssText = 'padding:4px 8px; font-size:12px; border:1px solid #d1d5db; border-radius:4px; background:' + (i === spSelectedOverbox ? '#3b82f6; color:white' : 'white') + '; cursor:pointer;';
+          btn.onclick = () => {
+            spSelectedOverbox = i;
+            showSampakPreview(overboxes); // Refresh med ny selection
+          };
+          tabsContainer.appendChild(btn);
+        });
+      }
+      
+      // Vis container med detaljer for valgte overkasse
+      const selectedOverbox = overboxes[spSelectedOverbox];
+      if (selectedOverbox) {
+        visualizationContainer.style.display = 'block';
+        
+        // Opdater slider max værdi baseret på overkasse højde
+        const cutSlider = document.getElementById('sp-cut');
+        if (cutSlider) {
+          const maxHeight = Math.max(...selectedOverbox.innerBoxes.map(b => b.z + b.height), selectedOverbox.H);
+          cutSlider.max = Math.ceil(maxHeight);
+          if (spCutHeight > maxHeight) {
+            spCutHeight = maxHeight;
+            cutSlider.value = maxHeight;
+          }
+        }
+        
+        // Generer detaljer for valgte overkasse
+        const previewHTML = `
+          <div style="display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid #e2e8f0; border-radius: 6px; background: white;">
+            <div style="width: 16px; height: 16px; border-radius: 3px; background-color: ${selectedOverbox.color || '#60a5fa'}; border: 1px solid #d1d5db;"></div>
+            <div style="flex: 1;">
+              <div style="font-weight: 500; color: #374151; font-size: 12px;">${selectedOverbox.name}</div>
+              <div style="color: #6b7280; font-size: 11px;">${selectedOverbox.L}×${selectedOverbox.B}×${selectedOverbox.H} cm • ${selectedOverbox.weight.toFixed(3)} kg</div>
+              <div style="color: #6b7280; font-size: 10px;">Indeholder: ${selectedOverbox.innerBoxes ? selectedOverbox.innerBoxes.length : 0} indre kasser</div>
+            </div>
+          </div>
+        `;
+        
+        previewContainer.innerHTML = previewHTML;
+      }
+      
+      // Tegn 3D visning af valgte overkasse
+      if (canvas && selectedOverbox) {
+        drawSampak3D(canvas, [selectedOverbox]); // Send kun valgte overkasse
+      }
+    }
+    
+    // Sampak 3D state
+    let spViewMode = '3d'; // kun 3D visning
+    let spAngle = 30;
+    let spCutHeight = 50; // Start med fuld visning (max værdi)
+    let spRotation = 0;
+    let spDragStart = null;
+    let spIsDragging = false;
+    let spSelectedOverbox = 0; // Valgt overkasse index
+    
+    // Sampak mouse events for rotation
+    function setupSampakCanvasEvents() {
+      const spCanvas = document.getElementById('sp-3d-canvas');
+      if (!spCanvas) return;
+      
+      let spDragging = false, spLx = 0;
+      
+      spCanvas.addEventListener('mousedown', e => { 
+        spDragging = true; 
+        spLx = e.clientX; 
+        spCanvas.style.cursor = 'grabbing';
+      });
+      
+      window.addEventListener('mouseup', () => { 
+        spDragging = false; 
+        const spCanvas = document.getElementById('sp-3d-canvas');
+        if (spCanvas) spCanvas.style.cursor = 'grab';
+      });
+      
+      window.addEventListener('mousemove', e => {
+        if (!spDragging) return;
+        const dx = e.clientX - spLx; 
+        spLx = e.clientX;
+        yaw += dx * 0.01; // Brug samme yaw som normal visning
+        
+        // Redraw sampak 3D
+        const spCanvas = document.getElementById('sp-3d-canvas');
+        if (spCanvas && window._sampakOverboxes && window._sampakOverboxes[spSelectedOverbox]) {
+          drawSampak3D(spCanvas, [window._sampakOverboxes[spSelectedOverbox]]);
+        }
+      });
+      
+      // Touch support for mobile
+      spCanvas.addEventListener('touchstart', function(e){
+        if (!e.touches || e.touches.length === 0) return;
+        spDragging = true;
+        spLx = e.touches[0].clientX;
+        spCanvas.style.cursor = 'grabbing';
+        e.preventDefault();
+      }, {passive:false});
+      
+      window.addEventListener('touchend', function(){
+        spDragging = false;
+        const spCanvas = document.getElementById('sp-3d-canvas');
+        if (spCanvas) spCanvas.style.cursor = 'grab';
+      }, {passive:true});
+      
+      window.addEventListener('touchmove', function(e){
+        if(!spDragging) return;
+        if (!e.touches || e.touches.length === 0) return;
+        const x = e.touches[0].clientX;
+        const dx = x - spLx; 
+        spLx = x;
+        yaw += dx * 0.01;
+        
+        // Redraw sampak 3D
+        const spCanvas = document.getElementById('sp-3d-canvas');
+        if (spCanvas && window._sampakOverboxes && window._sampakOverboxes[spSelectedOverbox]) {
+          drawSampak3D(spCanvas, [window._sampakOverboxes[spSelectedOverbox]]);
+        }
+        e.preventDefault();
+      }, {passive:false});
+    }
+    
+    // Funktion til at tegne 3D visning af sampak (bruger samme logik som normal 3D)
+    function drawSampak3D(canvas, overboxes) {
+      if (!canvas) return;
+      
+      const ctx = canvas.getContext('2d');
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * window.devicePixelRatio;
+      canvas.height = rect.height * window.devicePixelRatio;
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      
+      const W = rect.width;
+      const H = rect.height;
+      
+      // Clear canvas
+      ctx.clearRect(0, 0, W, H);
+      
+      // Hvis ingen overboxes, vis besked
+      if (!overboxes || !Array.isArray(overboxes) || overboxes.length === 0) {
+        ctx.fillStyle = '#6b7280';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Vælg kasser for at se 3D visning', W / 2, H / 2);
+        
+        // Nulstil info display
+        const heightInfo = document.getElementById('sp-info-height');
+        const weightInfo = document.getElementById('sp-info-weight');
+        if (heightInfo) heightInfo.textContent = 'Højde: - cm';
+        if (weightInfo) weightInfo.textContent = 'Vægt: - kg';
+        return;
+      }
+      
+      // Tag den første overbox og vis dens indhold
+      const overbox = overboxes[0];
+      if (!overbox || !overbox.innerBoxes) {
+        ctx.fillStyle = '#6b7280';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Ingen indre kasser fundet', W / 2, H / 2);
+        console.log('Debug: overbox data:', overbox);
+        return;
+      }
+      
+      // Opdater info display
+      const heightInfo = document.getElementById('sp-info-height');
+      const weightInfo = document.getElementById('sp-info-weight');
+      if (heightInfo) heightInfo.textContent = `Højde: ${overbox.H} cm`;
+      if (weightInfo) weightInfo.textContent = `Vægt: ${overbox.weight.toFixed(3)} kg`;
+      
+      // Brug SAMME 3D tegne-logik som draw3D funktionen
+      const fakePallet = {
+        palletLength: overbox.L,
+        palletWidth: overbox.B
+      };
+      
+      const boxes = overbox.innerBoxes;
+      
+      // Brug SAMME variabler som normal 3D funktionen
+      const L = overbox.L, B = overbox.B;
+      const cosz = Math.cos(yaw), sinz = Math.sin(yaw);
+      const cosx = Math.cos(pitch), sinx = Math.sin(pitch);
+      const cx = L/2, cy = B/2;
+      
+      function rot(x,y,z){ 
+        const dx = x - cx, dy = y - cy; 
+        const xz =  dx*cosz - dy*sinz; 
+        const yz =  dx*sinz + dy*cosz; 
+        const y2 = yz*cosx - z*sinx; 
+        const z2 = yz*sinx + z*cosx; 
+        return {x:xz, y:y2, z:z2}; 
+      }
+      
+      let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+      
+      // compute model bounds using pallet corners + slice plane
+      // Samme logik som normal draw(): slider værdi = vis op til denne højde
+      const maxBoxHeight = Math.max(...boxes.map(b => b.z + b.height), overbox.H);
+      const sliceZ = Math.min(Math.max(1, spCutHeight), Math.max(1, Math.round(maxBoxHeight)));
+      const baseHeight = 0;
+      const C = [ rot(0,0,0), rot(L,0,0), rot(L,B,0), rot(0,B,0),
+                  rot(0,0, -baseHeight), rot(L,0,-baseHeight), rot(L,B,-baseHeight), rot(0,B,-baseHeight),
+                  rot(0,0,sliceZ), rot(L,0,sliceZ), rot(L,B,sliceZ), rot(0,B,sliceZ) ];
+      for(const p of C){ 
+        if(p.x<minX)minX=p.x; 
+        if(p.x>maxX)maxX=p.x; 
+        if(p.y<minY)minY=p.y; 
+        if(p.y>maxY)maxY=p.y; 
+      }
+      
+      const PAD = 30;
+      const wModel=Math.max(1e-6,maxX-minX), hModel=Math.max(1e-6,maxY-minY);
+      const scale = Math.min((W-2*PAD)/wModel, (H-2*PAD)/hModel);
+      const midX=(minX+maxX)/2, midY=(minY+maxY)/2;
+      const ox = W/2 - midX*scale, oy = H/2 + midY*scale;
+      
+      function proj(x,y,z){ 
+        const p=rot(x,y,z); 
+        return { x: ox + p.x*scale, y: oy - p.y*scale, z: p.z }; 
+      }
+      
+      // ground top && slice plane
+      (function(){
+        const p=[proj(0,0,0),proj(L,0,0),proj(L,B,0),proj(0,B,0)];
+        ctx.beginPath(); ctx.moveTo(p[0].x,p[0].y); 
+        for(let i=1;i<p.length;i++) ctx.lineTo(p[i].x,p[i].y); 
+        ctx.closePath();
+        ctx.fillStyle='#e7edf3'; 
+        ctx.strokeStyle='#cbd5e1'; 
+        ctx.lineWidth=1.2; 
+        ctx.fill(); 
+        ctx.stroke();
+        
+        if (sliceZ < maxBoxHeight) {
+          const t=[proj(0,0,sliceZ),proj(L,0,sliceZ),proj(L,B,sliceZ),proj(0,B,sliceZ)];
+          ctx.beginPath(); ctx.moveTo(t[0].x,t[0].y); 
+          for(let i=1;i<t.length;i++) ctx.lineTo(t[i].x,t[i].y); 
+          ctx.closePath();
+          ctx.setLineDash([4,4]); 
+          ctx.strokeStyle='rgba(148,163,184,.55)'; 
+          ctx.stroke(); 
+          ctx.setLineDash([]);
+        }
+      })();
+      
+      
+      // Draw boxes under slice - SAMME LOGIK SOM draw3D
+      const vis = boxes.filter(b => b.z <= sliceZ + 1e-6);
+      const faces=[];
+      
+      function pushBox(b){
+        const x=b.x,y=b.y,z=b.z,l=b.length,w=b.width,h=b.height;
+        const P=[ proj(x,y,z), proj(x+l,y,z), proj(x+l,y+w,z), proj(x,y+w,z),
+                  proj(x,y,z+h), proj(x+l,y,z+h), proj(x+l,y+w,z+h), proj(x,y+w,z+h) ];
+        
+        const base = (!window._hlType || ((b.name||'').trim()===window._hlType)) ? (b.color || '#60a5fa') : '#E5E7EB';
+        const tint=(hex,k)=>{ 
+          const s=hex.replace('#',''); 
+          const r=parseInt(s.slice(0,2),16), g=parseInt(s.slice(2,4),16), bl=parseInt(s.slice(4,6),16);
+          const f=v=>Math.max(0,Math.min(255,Math.round(v*k))); 
+          return `rgb(${f(r)},${f(g)},${f(bl)})`; 
+        };
+        
+        const polys=[ 
+          {idx:[4,5,6,7],k:1.04},
+          {idx:[1,2,6,5],k:0.96},
+          {idx:[2,3,7,6],k:0.90},
+          {idx:[0,1,5,4],k:0.86},
+          {idx:[0,3,7,4],k:0.82},
+          {idx:[0,1,2,3],k:0.78}
+        ];
+        
+        for(const pl of polys){ 
+          const pts=pl.idx.map(i=>P[i]); 
+          const zkey=Math.max(pts[0].z,pts[1].z,pts[2].z,pts[3].z); 
+          faces.push({ pts, fill:tint(base,pl.k), stroke:'rgba(15,23,42,.42)', zkey }); 
+        }
+      }
+      
+      vis.forEach(pushBox);
+      faces.sort((a,b)=>a.zkey - b.zkey);
+      
+      for(const F of faces){ 
+        ctx.beginPath(); 
+        ctx.moveTo(F.pts[0].x,F.pts[0].y); 
+        for(let i=1;i<F.pts.length;i++) ctx.lineTo(F.pts[i].x,F.pts[i].y); 
+        ctx.closePath(); 
+        ctx.fillStyle=F.fill; 
+        ctx.strokeStyle=F.stroke; 
+        ctx.lineWidth=1.05; 
+        ctx.fill(); 
+        ctx.stroke(); 
+      }
+    }
+    
+    
+    // Tegn avanceret 3D kasse med vinkel og snit
+    function draw3DBoxAdvanced(ctx, x, y, w, h, d, color) {
+      const angleRad = spAngle * Math.PI / 180;
+      const cutHeight = spCutHeight;
+      
+      // Beregn 3D koordinater
+      const dx = Math.cos(angleRad) * d;
+      const dy = Math.sin(angleRad) * d;
+      
+      // Top face
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + w, y);
+      ctx.lineTo(x + w + dx, y - dy);
+      ctx.lineTo(x + dx, y - dy);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Right face (mørkere)
+      ctx.fillStyle = shadeColor(color, -20);
+      ctx.beginPath();
+      ctx.moveTo(x + w, y);
+      ctx.lineTo(x + w + dx, y - dy);
+      ctx.lineTo(x + w + dx, y + h - dy);
+      ctx.lineTo(x + w, y + h);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Left face (endnu mørkere)
+      ctx.fillStyle = shadeColor(color, -40);
+      ctx.beginPath();
+      ctx.moveTo(x, y + h);
+      ctx.lineTo(x + dx, y + h - dy);
+      ctx.lineTo(x + w + dx, y + h - dy);
+      ctx.lineTo(x + w, y + h);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Apply cut if specified
+      if (cutHeight > 0) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.fillRect(x, y + h - cutHeight, w, cutHeight);
+      }
+      
+      // Outline
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + w, y);
+      ctx.lineTo(x + w + dx, y - dy);
+      ctx.lineTo(x + dx, y - dy);
+      ctx.closePath();
+      ctx.stroke();
+    }
+    
+    // Funktion til at tegne en 3D kasse
+    function draw3DBox(ctx, x, y, w, h, d, color) {
+      const depth = d * 0.3; // 3D effekt dybde
+      
+      // Top face
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, w, h);
+      
+      // Right face (mørkere)
+      ctx.fillStyle = shadeColor(color, -20);
+      ctx.beginPath();
+      ctx.moveTo(x + w, y);
+      ctx.lineTo(x + w + depth, y - depth);
+      ctx.lineTo(x + w + depth, y + h - depth);
+      ctx.lineTo(x + w, y + h);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Left face (endnu mørkere)
+      ctx.fillStyle = shadeColor(color, -40);
+      ctx.beginPath();
+      ctx.moveTo(x, y + h);
+      ctx.lineTo(x + depth, y + h - depth);
+      ctx.lineTo(x + w + depth, y + h - depth);
+      ctx.lineTo(x + w, y + h);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Outline
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, w, h);
+    }
+    
+    // Funktion til at ændre farve mørkhed
+    function shadeColor(color, percent) {
+      const num = parseInt(color.replace("#", ""), 16);
+      const amt = Math.round(2.55 * percent);
+      const R = (num >> 16) + amt;
+      const G = (num >> 8 & 0x00FF) + amt;
+      const B = (num & 0x0000FF) + amt;
+      return "#" + (0x1000000 + (R < 255 ? R < 1 ? 0 : R : 255) * 0x10000 +
+        (G < 255 ? G < 1 ? 0 : G : 255) * 0x100 +
+        (B < 255 ? B < 1 ? 0 : B : 255)).toString(16).slice(1);
+    }
     function simulatePack(){
-      const idxs = getSelectedIdx(); const sel = idxs.map(i => parsed[i]);
+      const idxs = getSelectedIdx(); 
+      const sel = idxs.map(i => parsed[i]);
+      
+      // Skjul forhåndsvisning hvis ingen kasser er valgt
+      if (sel.length === 0) {
+        document.getElementById('sp-visualization').style.display = 'none';
+        document.getElementById('sp-live').textContent = 'Ingen valgt endnu.';
+        
+        // Tegn tom 3D visning
+        const canvas = document.getElementById('sp-3d-canvas');
+        if (canvas) {
+          drawSampak3D(canvas, []);
+        }
+        return;
+      }
+      
       const maxL = +document.getElementById('sp-maxL').value || 0;
       const maxB = +document.getElementById('sp-maxB').value || 0;
       const maxH = +document.getElementById('sp-maxH').value || 0;
       const maxW = +document.getElementById('sp-maxW').value || 0;
-      const {overboxes, notElig, totalUnits} = packPreview(sel, {maxL,maxB,maxH,maxW});
-      const names = Array.from(new Set(sel.map(b=>b.name)));
-      document.getElementById('sp-live').textContent = `Valgt: ${sel.length} typer (${totalUnits} stk) — ${names.join(', ')} — overkasser: ${overboxes.length} — rester: ${notElig.reduce((s,b)=>s+b.count,0)} stk.`;
+      
+      // Hent kasse tykkelse indstillinger
+      const isCustomThickness = document.getElementById('sp-customThickness').checked;
+      let wallThickness, sideThickness, bottomThickness, topThickness;
+      
+      if (isCustomThickness) {
+        sideThickness = +document.getElementById('sp-sideThickness').value || 0.5;
+        bottomThickness = +document.getElementById('sp-bottomThickness').value || 0.8;
+        topThickness = +document.getElementById('sp-topThickness').value || 0.5;
+      } else {
+        wallThickness = +document.getElementById('sp-wallThickness').value || 0.5;
+        sideThickness = wallThickness;
+        bottomThickness = wallThickness;
+        topThickness = wallThickness;
+      }
+      
+      if (mode === 'sampak') {
+        // For sampak mode, brug handleExistingSampak med tykkelse indstillinger
+        const thicknessSettings = { sideThickness, bottomThickness, topThickness };
+        const result = handleExistingSampak(sel, {maxL,maxB,maxH,maxW}, thicknessSettings);
+        const names = Array.from(new Set(sel.map(b=>b.name)));
+        // Vis ydre mål information
+        const outerDimensions = result.overboxes.map(ob => `${ob.L}×${ob.B}×${ob.H}cm`).join(', ');
+        document.getElementById('sp-live').textContent = `Valgt: ${sel.length} typer (${sel.reduce((s,b)=>s+b.count,0)} stk) — ${names.join(', ')} — overkasser: ${result.overboxes.length} (${outerDimensions}) — rester: ${result.notElig.reduce((s,b)=>s+b.count,0)} stk.`;
+        
+        // Vis forhåndsvisning af overkasser
+        showSampakPreview(result.overboxes);
+        
+        // Tegn 3D visning også
+        const canvas = document.getElementById('sp-3d-canvas');
+        if (canvas) {
+          drawSampak3D(canvas, result.overboxes);
+        }
+      } else {
+        // Normal import flow
+        const thicknessSettings = { sideThickness, bottomThickness, topThickness };
+        const {overboxes, notElig, totalUnits} = packPreview(sel, {maxL,maxB,maxH,maxW}, thicknessSettings);
+        const names = Array.from(new Set(sel.map(b=>b.name)));
+        // Vis ydre mål information
+        const outerDimensions = overboxes.map(ob => `${ob.L}×${ob.B}×${ob.H}cm`).join(', ');
+        document.getElementById('sp-live').textContent = `Valgt: ${sel.length} typer (${totalUnits} stk) — ${names.join(', ')} — overkasser: ${overboxes.length} (${outerDimensions}) — rester: ${notElig.reduce((s,b)=>s+b.count,0)} stk.`;
+        
+        // Vis forhåndsvisning af overkasser
+        showSampakPreview(overboxes);
+      }
     }
-    document.getElementById('sp-skip').onclick = () => { closeModal(); applyImport(parsed, mode, {selectedIdx:[], overboxes:[], notElig:[]}); };
+    document.getElementById('sp-skip').onclick = () => { 
+      // Gendan original højre panel
+      const rightPanel = document.querySelector('.right-panel');
+      if (rightPanel && rightPanel.dataset.originalContent) {
+        rightPanel.innerHTML = rightPanel.dataset.originalContent;
+        delete rightPanel.dataset.originalContent;
+      }
+      
+      if (mode === 'sampak') {
+        closeModal(); // Ingen ændringer for sampak mode
+      } else {
+        closeModal(); 
+        applyImport(parsed, mode, {selectedIdx:[], overboxes:[], notElig:[]}); 
+      }
+    };
+    
     document.getElementById('sp-ok').onclick = () => {
       const idxs = getSelectedIdx();
       const sel = idxs.map(i => parsed[i]);
@@ -1147,8 +3035,56 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
       const maxB = +document.getElementById('sp-maxB').value || 0;
       const maxH = +document.getElementById('sp-maxH').value || 0;
       const maxW = +document.getElementById('sp-maxW').value || 0;
-      const res = packSelected(sel, {maxL,maxB,maxH,maxW}); res.selectedIdx = idxs;
-      closeModal(); applyImport(parsed, mode, res);
+      
+      // Hent kasse tykkelse indstillinger
+      const isCustomThickness = document.getElementById('sp-customThickness').checked;
+      let sideThickness, bottomThickness, topThickness;
+      
+      if (isCustomThickness) {
+        sideThickness = +document.getElementById('sp-sideThickness').value || 0.5;
+        bottomThickness = +document.getElementById('sp-bottomThickness').value || 0.8;
+        topThickness = +document.getElementById('sp-topThickness').value || 0.5;
+      } else {
+        const wallThickness = +document.getElementById('sp-wallThickness').value || 0.5;
+        sideThickness = wallThickness;
+        bottomThickness = wallThickness;
+        topThickness = wallThickness;
+      }
+      
+      const thicknessSettings = { sideThickness, bottomThickness, topThickness };
+      
+      if (mode === 'sampak') {
+        // Håndter sampak af eksisterende kasser
+        const limits = { maxL, maxB, maxH, maxW };
+        const result = handleExistingSampak(sel, limits, thicknessSettings);
+        result.selectedIdx = idxs;
+        result.thicknessSettings = thicknessSettings;
+        
+        // Gendan original højre panel
+        const rightPanel = document.getElementById('vizCard');
+        if (rightPanel && rightPanel.dataset.originalContent) {
+          rightPanel.innerHTML = rightPanel.dataset.originalContent;
+          delete rightPanel.dataset.originalContent;
+        }
+        
+        closeModal();
+        applyImport(parsed, mode, result);
+      } else {
+        // Normal import flow
+        const res = packSelected(sel, {maxL,maxB,maxH,maxW}, thicknessSettings); 
+        res.selectedIdx = idxs;
+        res.thicknessSettings = thicknessSettings;
+        
+        // Gendan original højre panel
+        const rightPanel = document.getElementById('vizCard');
+        if (rightPanel && rightPanel.dataset.originalContent) {
+          rightPanel.innerHTML = rightPanel.dataset.originalContent;
+          delete rightPanel.dataset.originalContent;
+        }
+        
+        closeModal(); 
+        applyImport(parsed, mode, res);
+      }
     };
     document.getElementById('modalRoot').addEventListener('change', (e)=>{
       if (e.target.classList.contains('sampak-check') || ['sp-maxL','sp-maxB','sp-maxH','sp-maxW'].includes(e.target.id)) simulatePack();
@@ -1168,41 +3104,262 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
       if (groups.has(key)) groups.get(key).count += 1;
       else groups.set(key, { name: ob.name, L, B, H, weight: W, count: 1 });
     });
-    const overboxes = Array.from(groups.values()).map((ob, i) => ({ ...ob, color: autoColor((state.boxTypes.length + i) % 50), flatOnly: false, bottomRequired: false }));
+    const overboxes = Array.from(groups.values()).map((ob, i) => ({ 
+      ...ob, 
+      color: autoColor((state.boxTypes.length + i) % 50), 
+      flatOnly: false, 
+      bottomRequired: false,
+      // Sørg for at overkasser har korrekte ydre mål
+      L: Math.round(ob.L),
+      B: Math.round(ob.B), 
+      H: Math.round(ob.H)
+    }));
 
     const coloredUnselected = unselected.map((b,i)=>({ ...b, color: b.color && b.color.trim() ? b.color : autoColor((state.boxTypes.length + overboxes.length + i) % 50) }));
     const mergeList = [...coloredUnselected, ...notElig, ...overboxes];
 
-    if (mode === 'replace') state.boxTypes = mergeList; else state.boxTypes = state.boxTypes.concat(mergeList);
+    if (mode === 'replace') {
+      state.boxTypes = mergeList;
+      alert(`✅ Alle kasser erstattet: ${mergeList.length} kassetype(r). Overkasser: ${overboxes.length}.`);
+    } else if (mode === 'add') {
+      state.boxTypes = state.boxTypes.concat(mergeList);
+      alert(`✅ Kasser tilføjet: ${mergeList.length} nye kassetype(r). Overkasser: ${overboxes.length}.`);
+    } else if (mode === 'sampak') {
+      // For sampak mode, erstatt de valgte kasser med overkasser
+      const selectedIdx = new Set(res.selectedIdx || []);
+      
+      // Fjern de valgte kasser fra state.boxTypes
+      state.boxTypes = state.boxTypes.filter((_, i) => !selectedIdx.has(i));
+      
+      // Tilføj overkasser og ikke-eligible kasser
+      state.boxTypes = state.boxTypes.concat(overboxes, notElig);
+      
+      alert(`✅ Sampak gennemført: ${overboxes.length} overkasser oprettet. ${notElig.length} kasser kunne ikke pakkes.`);
+    }
+    
     renderBoxList();
-    alert(`CSV indlæst: ${mergeList.length} kassetype(r). Overkasser: ${overboxes.length}.`);
   }
 
   function parseCsvToBoxTypes(csvText){
-    const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== ""); if (lines.length < 2) return [];
+// Robust CSV → boxTypes mapper that keeps CSV L,B,H order (no normalization)
+    const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== "");
+    if (lines.length < 2) return [];
+    // Detect delimiter
+    const headLine = lines[0];
+    const delim = (headLine.indexOf(';') !== -1 && headLine.indexOf(',') === -1) ? ';' : ',';
+    const split = (line) => line.split(delim).map(c => (c||'').trim());
+    const header = split(headLine).map(h => (h||'').toLowerCase());
+
+    const idx = (names) => {
+      for (let i=0;i<header.length;i++){
+        const h = header[i];
+        for (const n of names){ if (h === n) return i; }
+      }
+      return -1;
+    };
+    const id_item = idx(['itemno','item_no','varenr','varenummer','item']);
+    const id_l    = idx(['length_cm','length','længde','laengde','l']);
+    const id_b    = idx(['width_cm','width','bredde','b']);
+    const id_h    = idx(['height_cm','height','højde','hojde','h']);
+    const id_w    = idx(['weight','weight_kg','vægt','vaegt','kg']);
+    const id_qty  = idx(['quantity','qty','antal','stk','count']);
+
+    const parseNum = (s) => {
+      if (s==null) return 0;
+      s = (''+s).trim();
+      if (!s) return 0;
+      s = s.replace(',', '.');
+      const v = parseFloat(s);
+      return isFinite(v) ? v : 0;
+    };
+
     const parsed = [];
-    for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].replace(/;/g, ',').split(',').map(c => c.trim()); if (cols.length < 7) continue;
-      const itemNo = cols[1], H = parseFloat(cols[2].replace(',','.')) || 0, B = parseFloat(cols[3].replace(',','.')) || 0, L = parseFloat(cols[4].replace(',','.')) || 0, weight = parseFloat(cols[5].replace(',','.')) || 0, count = parseInt(cols[6].replace(',','.')) || 0;
-      if (!itemNo || L<=0 || B<=0 || H<=0 || weight<=0 || count<=0) continue;
-      parsed.push({ name:itemNo, L,B,H, weight, count, color:"", flatOnly:false, bottomRequired:false });
+    for (let r=1; r<lines.length; r++){
+      const cols = split(lines[r]);
+      if (cols.length === 0) continue;
+      const name   = (id_item>=0 && cols[id_item]) ? cols[id_item].trim() : '';
+      const L      = parseNum(id_l>=0 ? cols[id_l] : '');
+      const B      = parseNum(id_b>=0 ? cols[id_b] : '');
+      const H      = parseNum(id_h>=0 ? cols[id_h] : '');
+      const weight = parseNum(id_w>=0 ? cols[id_w] : '');
+      const count  = Math.max(0, Math.round(parseNum(id_qty>=0 ? cols[id_qty] : '')));
+      if (!name || L<=0 || B<=0 || H<=0 || weight<=0 || count<=0) continue;
+      parsed.push({ name, L, B, H, weight, count, color:'', flatOnly:false, bottomRequired:false });
     }
     return parsed;
-  }
+}
 
-  document.getElementById('uploadCsvBtn').addEventListener('click', ()=>{ const fi = document.getElementById('csvFile'); fi.value = ''; fi.click(); });
+  // Upload CSV: Kun indlæs filer, spørg om tilføj/erstat hvis der allerede er kasser
+  document.getElementById('uploadCsvBtn').addEventListener('click', ()=>{
+    const fi = document.getElementById('csvFile'); 
+    fi.value = ''; 
+    fi.click(); 
+  });
+  
   document.getElementById('csvFile').addEventListener('change', function(){
-    const file = this.files[0]; if (!file) return;
+    const file = this.files[0]; 
+    if (!file) return;
+    
     const reader = new FileReader();
     reader.onload = (e) => {
-      const parsed = parseCsvToBoxTypes(e.target.result);
-      if (parsed.length === 0) { alert("CSV-filen er tom eller mangler gyldige rækker."); this.value=''; return; }
-      const hasReal = state.boxTypes.some(b => b.L>0 || b.B>0 || b.H>0 || b.weight>0 || b.count>0 || (b.name||"").trim());
-      if (hasReal) showAddReplaceModal(parsed); else showSampakModal(parsed, 'replace');
+      let parsed = parseCsvToBoxTypes(e.target.result);
+      // Swap L<->H to ensure L=length, H=height in UI
+      parsed = parsed.map(b => ({...b, L:b.H, H:b.L}));
+      
+      if (parsed.length === 0) { 
+        alert("CSV-filen er tom eller mangler gyldige rækker."); 
+        this.value=''; 
+        return; 
+      }
+      
+      // Tjek om der allerede er kasser
+      const hasExistingBoxes = state.boxTypes.some(b => b.L>0 || b.B>0 || b.H>0 || b.weight>0 || b.count>0 || (b.name||"").trim());
+      
+      if (hasExistingBoxes) {
+        // Vis dialog om tilføj eller erstat
+        showAddReplaceModal(parsed);
+      } else {
+        // Ingen eksisterende kasser, indlæs direkte
+        state.boxTypes = parsed;
+        renderBoxList();
+        alert(`✅ ${parsed.length} kassetyper indlæst fra CSV`);
+      }
+      
       this.value='';
     };
     reader.readAsText(file);
   });
+  
+  // Sampak knap: Altid synlig, håndterer sampak logikken
+  document.getElementById('sampakBtn').addEventListener('click', () => {
+    // Tjek om der er kasser at sampakke
+    const hasBoxes = state.boxTypes.some(b => b.L>0 || b.B>0 || b.H>0 || b.weight>0 || b.count>0 || (b.name||"").trim());
+    
+    if (!hasBoxes) {
+      alert("❌ Ingen kasser at sampakke. Indlæs først nogle kassetyper.");
+      return;
+    }
+    
+    // Vis sampak modal med eksisterende kasser
+    showSampakModal(state.boxTypes, 'sampak');
+  });
+  
+  // Hjælpefunktion til at håndtere sampak af eksisterende kasser
+  function handleExistingSampak(selectedBoxes, limits, thicknessSettings = {}) {
+    const { sideThickness = 0.5, bottomThickness = 0.5, topThickness = 0.5 } = thicknessSettings;
+    
+    // Konverter valgte kasser til format der kan bruges af pakke-algoritmen
+    const boxTypes = selectedBoxes.map((box, idx) => ({
+      id: `sampak_${idx}`,
+      name: box.name,
+      length: box.L,
+      width: box.B, 
+      height: box.H,
+      weight: box.weight,
+      count: box.count,
+      color: box.color || autoColor(idx % 50),
+      flatOnly: box.flatOnly || false,
+      bottomRequired: box.bottomRequired || false
+    }));
+    
+    // Opret sampak-kasse specifikation (indre mål)
+    const sampakSpec = {
+      length: limits.maxL - (2 * sideThickness),
+      width: limits.maxB - (2 * sideThickness),
+      maxHeight: limits.maxH - bottomThickness - topThickness,
+      maxWeight: limits.maxW
+    };
+    
+    // Brug samme pakke-algoritme som normal pakning
+    let packing;
+    try {
+      packing = optimizePackingTetris(sampakSpec, boxTypes);
+    } catch (error) {
+      console.error('Fejl i sampak pakning:', error);
+      return { overboxes: [], notElig: selectedBoxes };
+    }
+    
+    if (!packing || !packing.pallets || packing.pallets.length === 0) {
+      return { overboxes: [], notElig: selectedBoxes };
+    }
+    
+    // Konverter pakke-resultatet til overkasser
+    const overboxes = [];
+    const notElig = [];
+    
+    packing.pallets.forEach((pallet, palletIdx) => {
+      if (pallet.boxes && pallet.boxes.length > 0) {
+        // Beregn ydre mål for denne sampak-kasse
+        const outerL = limits.maxL;
+        const outerB = limits.maxB;
+        const outerH = Math.min(limits.maxH, pallet.totalHeight + bottomThickness + topThickness);
+        
+        // Samle alle navne fra kasserne i denne pallet
+        const boxNames = pallet.boxes.map(box => box.name);
+        const uniqueNames = [...new Set(boxNames)];
+        const nameCount = {};
+        boxNames.forEach(name => nameCount[name] = (nameCount[name] || 0) + 1);
+        const displayName = uniqueNames.map(name => 
+          nameCount[name] > 1 ? `${name} (${nameCount[name]})` : name
+        ).join(', ');
+        
+        // Opret overbox med innerBoxes (justeret for wall thickness)
+        const innerBoxes = pallet.boxes.map(box => ({
+          x: box.x + sideThickness,
+          y: box.y + sideThickness,
+          z: box.z + bottomThickness,
+          length: box.length,
+          width: box.width,
+          height: box.height,
+          color: box.color,
+          name: box.name,
+          weight: box.weight
+        }));
+        
+        overboxes.push({
+          name: displayName,
+          L: outerL,
+          B: outerB,
+          H: outerH,
+          weight: pallet.boxes.reduce((sum, box) => sum + box.weight, 0),
+          count: 1,
+          color: autoColor(palletIdx % 50),
+          flatOnly: false,
+          bottomRequired: false,
+          innerBoxes,
+          sideThickness,
+          bottomThickness,
+          topThickness
+        });
+      }
+    });
+    
+    // Find kasser der ikke blev pakket
+    const packedBoxIds = new Set();
+    packing.pallets.forEach(pallet => {
+      pallet.boxes.forEach(box => {
+        packedBoxIds.add(box.typeId);
+      });
+    });
+    
+    boxTypes.forEach(boxType => {
+      if (!packedBoxIds.has(boxType.id)) {
+        notElig.push({
+          name: boxType.name,
+          L: boxType.length,
+          B: boxType.width,
+          H: boxType.height,
+          weight: boxType.weight,
+          count: boxType.count,
+          color: boxType.color,
+          reason: 'Kunne ikke pakkes'
+        });
+      }
+    });
+    
+    return { overboxes, notElig };
+  }
+  
 
   // Spinner der med garanti vises før tung beregning starter
   function withSpinner(fn){
@@ -1236,7 +3393,14 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
     const types = collectTypes();
     const effMaxH = Math.max(0, palSpec.maxHeight - (palSpec.baseHeight||0));
     const algoSpec = {length:palSpec.length, width:palSpec.width, maxHeight:effMaxH, maxWeight:palSpec.maxWeight};
-    const packing = optimizePackingTetris(algoSpec, types);
+    let packing;
+try {
+  packing = optimizePackingTetris(algoSpec, types);
+} catch (error) {
+  console.error('Fejl i optimizePackingTetris kald:', error);
+  console.error('Stack trace:', error.stack);
+  packing = { pallets: [], boxes: [] };
+}
     const override = tryFullGridOverride(algoSpec, types, packing);
     window._palletBaseHeight = palSpec.baseHeight||0;
     renderPallet(override || packing);
@@ -1251,7 +3415,22 @@ window.addEventListener('error', function(e){
     document.getElementById('addBoxBtn')?.removeAttribute('disabled');
     document.getElementById('uploadCsvBtn')?.removeAttribute('disabled');
   }catch(_){}
-  alert('Der opstod en JavaScript-fejl: ' + (e.message||e.error));
+  
+  // Forbedret error reporting
+  console.error('JavaScript fejl:', e);
+  console.error('Stack trace:', e.error?.stack);
+  
+  let errorMsg = 'Der opstod en JavaScript-fejl: ' + (e.message||e.error);
+  if (e.error && e.error.stack) {
+    errorMsg += '\n\nStack trace:\n' + e.error.stack.split('\n').slice(0, 5).join('\n');
+  }
+  
+  // Tjek for syntax fejl specifikt
+  if (e.message && e.message.includes('Script error')) {
+    errorMsg += '\n\nDette kan være en syntax fejl. Tjek browser console for detaljer.';
+  }
+  
+  alert(errorMsg);
 });
 
 })();
@@ -1280,7 +3459,22 @@ window.addEventListener('error', function(e){
     document.getElementById('addBoxBtn')?.removeAttribute('disabled');
     document.getElementById('uploadCsvBtn')?.removeAttribute('disabled');
   }catch(_){}
-  alert('Der opstod en JavaScript-fejl: ' + (e.message||e.error));
+  
+  // Forbedret error reporting
+  console.error('JavaScript fejl:', e);
+  console.error('Stack trace:', e.error?.stack);
+  
+  let errorMsg = 'Der opstod en JavaScript-fejl: ' + (e.message||e.error);
+  if (e.error && e.error.stack) {
+    errorMsg += '\n\nStack trace:\n' + e.error.stack.split('\n').slice(0, 5).join('\n');
+  }
+  
+  // Tjek for syntax fejl specifikt
+  if (e.message && e.message.includes('Script error')) {
+    errorMsg += '\n\nDette kan være en syntax fejl. Tjek browser console for detaljer.';
+  }
+  
+  alert(errorMsg);
 });
 
 })();
@@ -1608,6 +3802,1118 @@ window.addEventListener('error', function(e){
     try{ globalThis.exportCsv = exportCsvImpl; }catch{}
   })();
   // === END CSV EXPORTER ===
+
+  // ==================== ALGORITME TEST FUNKTIONER ====================
+  
+  // Test scenarier for algoritme analyse
+  const TEST_SCENARIOS = {
+    
+    // SCENARIO 1: Standard kasser - test grundlæggende Tetris
+    standard: [
+      { name: "Lille", L: 20, B: 15, H: 10, weight: 0.5, count: 50, color: "#FF6B6B", flatOnly: false, bottomRequired: false },
+      { name: "Medium", L: 30, B: 25, H: 20, weight: 1.2, count: 30, color: "#4ECDC4", flatOnly: false, bottomRequired: false },
+      { name: "Stor", L: 40, B: 35, H: 25, weight: 2.5, count: 20, color: "#45B7D1", flatOnly: false, bottomRequired: false }
+    ],
+
+    // SCENARIO 2: Låste kasser (flatOnly) - test rotation begrænsninger
+    locked: [
+      { name: "Låst Lille", L: 15, B: 12, H: 8, weight: 0.3, count: 40, color: "#96CEB4", flatOnly: true, bottomRequired: false },
+      { name: "Låst Stor", L: 35, B: 28, H: 22, weight: 2.0, count: 25, color: "#FFEAA7", flatOnly: true, bottomRequired: false },
+      { name: "Fri Lille", L: 18, B: 14, H: 9, weight: 0.4, count: 35, color: "#DDA0DD", flatOnly: false, bottomRequired: false }
+    ],
+
+    // SCENARIO 3: I bund kasser - test bund-placering logik
+    bottomRequired: [
+      { name: "Bund Lille", L: 25, B: 20, H: 15, weight: 0.8, count: 20, color: "#FF8C42", flatOnly: false, bottomRequired: true },
+      { name: "Bund Stor", L: 45, B: 40, H: 30, weight: 3.0, count: 15, color: "#8B4513", flatOnly: false, bottomRequired: true },
+      { name: "Normal", L: 22, B: 18, H: 12, weight: 0.6, count: 30, color: "#32CD32", flatOnly: false, bottomRequired: false }
+    ],
+
+    // SCENARIO 4: Blandet kompleksitet - test algoritmens fleksibilitet
+    mixed: [
+      { name: "Bund Tung", L: 50, B: 45, H: 35, weight: 4.5, count: 10, color: "#DC143C", flatOnly: false, bottomRequired: true },
+      { name: "Låst Høj", L: 20, B: 18, H: 40, weight: 1.8, count: 25, color: "#FF69B4", flatOnly: true, bottomRequired: false },
+      { name: "Fri Kompakt", L: 28, B: 25, H: 16, weight: 1.1, count: 35, color: "#20B2AA", flatOnly: false, bottomRequired: false },
+      { name: "Bund Låst", L: 38, B: 32, H: 24, weight: 2.8, count: 18, color: "#FF4500", flatOnly: true, bottomRequired: true }
+    ],
+
+    // SCENARIO 5: Ekstreme tilfælde - test algoritmens robusthed
+    extreme: [
+      { name: "Meget Flad", L: 60, B: 50, H: 8, weight: 1.5, count: 12, color: "#9370DB", flatOnly: false, bottomRequired: false },
+      { name: "Meget Høj", L: 15, B: 12, H: 45, weight: 2.2, count: 20, color: "#FF1493", flatOnly: false, bottomRequired: false },
+      { name: "Meget Bred", L: 25, B: 70, H: 18, weight: 2.8, count: 15, color: "#00CED1", flatOnly: false, bottomRequired: false },
+      { name: "Kube", L: 30, B: 30, H: 30, weight: 2.5, count: 25, color: "#FFD700", flatOnly: false, bottomRequired: false }
+    ],
+
+    // SCENARIO 6: Tetris udfordringer - test algoritmens intelligens
+    tetrisChallenge: [
+      { name: "L-form", L: 40, B: 15, H: 20, weight: 1.8, count: 15, color: "#FF6347", flatOnly: false, bottomRequired: false },
+      { name: "T-form", L: 35, B: 25, H: 18, weight: 1.5, count: 20, color: "#40E0D0", flatOnly: false, bottomRequired: false },
+      { name: "Z-form", L: 30, B: 20, H: 22, weight: 1.3, count: 25, color: "#EE82EE", flatOnly: false, bottomRequired: false },
+      { name: "Firkant", L: 25, B: 25, H: 25, weight: 1.6, count: 30, color: "#F0E68C", flatOnly: false, bottomRequired: false }
+    ],
+
+    // SCENARIO 7: Realistisk 12-kasse scenario - OPTIMERET for hurtigere test (5 paller max)
+    realistic12: [
+      // Store kasser (grundlag) - reduceret antal
+      { name: "Euro Pallet", L: 120, B: 80, H: 15, weight: 8.0, count: 1, color: "#8B4513", flatOnly: true, bottomRequired: true },
+      { name: "Halv Pallet", L: 60, B: 80, H: 20, weight: 5.5, count: 2, color: "#A0522D", flatOnly: true, bottomRequired: true },
+      
+      // Medium kasser (hovedprodukt) - reduceret antal
+      { name: "Stor Kasse", L: 50, B: 40, H: 30, weight: 3.2, count: 4, color: "#DC143C", flatOnly: false, bottomRequired: false },
+      { name: "Medium Kasse", L: 40, B: 30, H: 25, weight: 2.1, count: 6, color: "#FF4500", flatOnly: false, bottomRequired: false },
+      { name: "Standard Kasse", L: 35, B: 25, H: 20, weight: 1.5, count: 8, color: "#FF6347", flatOnly: false, bottomRequired: false },
+      
+      // Små kasser (fyld) - reduceret antal
+      { name: "Lille Kasse", L: 25, B: 20, H: 15, weight: 0.8, count: 10, color: "#FF69B4", flatOnly: false, bottomRequired: false },
+      { name: "Mini Kasse", L: 20, B: 15, H: 12, weight: 0.5, count: 12, color: "#FF1493", flatOnly: false, bottomRequired: false },
+      
+      // Låste kasser (særlige krav) - reduceret antal
+      { name: "Låst Stor", L: 45, B: 35, H: 28, weight: 2.8, count: 3, color: "#32CD32", flatOnly: true, bottomRequired: false },
+      { name: "Låst Medium", L: 30, B: 25, H: 22, weight: 1.8, count: 5, color: "#00CED1", flatOnly: true, bottomRequired: false },
+      
+      // Ekstreme former - reduceret antal
+      { name: "Flad Kasse", L: 60, B: 50, H: 8, weight: 1.2, count: 4, color: "#9370DB", flatOnly: false, bottomRequired: false },
+      { name: "Høj Kasse", L: 18, B: 15, H: 45, weight: 2.5, count: 6, color: "#FFD700", flatOnly: false, bottomRequired: false },
+      { name: "Kube", L: 30, B: 30, H: 30, weight: 2.0, count: 8, color: "#FF8C00", flatOnly: false, bottomRequired: false }
+    ],
+
+    // SCENARIO 8: Hurtig test med høj støtte krav (70-80%)
+    quickHighSupport: [
+      { name: "Bund Tung", L: 50, B: 45, H: 35, weight: 4.5, count: 2, color: "#DC143C", flatOnly: false, bottomRequired: true },
+      { name: "Låst Høj", L: 20, B: 18, H: 40, weight: 1.8, count: 3, color: "#FF69B4", flatOnly: true, bottomRequired: false },
+      { name: "Fri Kompakt", L: 28, B: 25, H: 16, weight: 1.1, count: 5, color: "#20B2AA", flatOnly: false, bottomRequired: false },
+      { name: "Bund Låst", L: 38, B: 32, H: 24, weight: 2.8, count: 2, color: "#FF4500", flatOnly: true, bottomRequired: true }
+    ],
+
+    // SCENARIO 9: Hurtig test med lav støtte krav (30-50%)
+    quickLowSupport: [
+      { name: "Lille Stabil", L: 25, B: 20, H: 15, weight: 0.8, count: 4, color: "#FF8C42", flatOnly: false, bottomRequired: false },
+      { name: "Medium Let", L: 35, B: 28, H: 22, weight: 1.5, count: 3, color: "#4ECDC4", flatOnly: false, bottomRequired: false },
+      { name: "Stor Tung", L: 45, B: 40, H: 30, weight: 3.0, count: 2, color: "#8B4513", flatOnly: false, bottomRequired: false },
+      { name: "Kube Let", L: 30, B: 30, H: 30, weight: 2.0, count: 3, color: "#FFD700", flatOnly: false, bottomRequired: false }
+    ],
+
+    // SCENARIO 10: Hurtig test med blandet kompleksitet
+    quickMixed: [
+      { name: "Bund Stor", L: 60, B: 50, H: 25, weight: 5.0, count: 1, color: "#8B4513", flatOnly: false, bottomRequired: true },
+      { name: "Låst Medium", L: 30, B: 25, H: 20, weight: 1.8, count: 4, color: "#32CD32", flatOnly: true, bottomRequired: false },
+      { name: "Fri Lille", L: 20, B: 15, H: 12, weight: 0.5, count: 6, color: "#FF69B4", flatOnly: false, bottomRequired: false },
+      { name: "Høj Smal", L: 15, B: 12, H: 40, weight: 2.2, count: 3, color: "#FF1493", flatOnly: false, bottomRequired: false }
+    ]
+  };
+
+  // Test funktioner
+  function runScenarioTest(scenarioName, boxTypes) {
+    console.log(`\n🧪 TESTER SCENARIO: ${scenarioName}`);
+    console.log(`📦 Antal kassetyper: ${boxTypes.length}`);
+    
+    // Analyser kassetyper
+    const totalVolume = boxTypes.reduce((sum, box) => sum + (box.L * box.B * box.H * box.count), 0);
+    const totalWeight = boxTypes.reduce((sum, box) => sum + (box.weight * box.count), 0);
+    const lockedCount = boxTypes.filter(box => box.flatOnly).length;
+    const bottomCount = boxTypes.filter(box => box.bottomRequired).length;
+    
+    console.log(`📊 Total volumen: ${totalVolume.toFixed(0)} cm³`);
+    console.log(`⚖️ Total vægt: ${totalWeight.toFixed(1)} kg`);
+    console.log(`🔒 Låste kasser: ${lockedCount}`);
+    console.log(`⬇️ I bund kasser: ${bottomCount}`);
+    
+    return { totalVolume, totalWeight, lockedCount, bottomCount };
+  }
+
+  function analyzePackingResult(packing, scenarioName) {
+    if (!packing || !packing.pallets || packing.pallets.length === 0) {
+      console.log(`❌ Ingen pakning fundet for ${scenarioName}`);
+      return null;
+    }
+    
+    const pallet = packing.pallets[0];
+    const boxes = pallet.boxes || [];
+    
+    // Beregn effektivitet
+    const usedVolume = boxes.reduce((sum, box) => {
+      const boxVolume = (box.length || 0) * (box.width || 0) * (box.height || 0);
+      return sum + boxVolume;
+    }, 0);
+    
+    const maxHeight = Math.max(...boxes.map(box => (box.z || 0) + (box.height || 0)));
+    const layerCount = Math.ceil(maxHeight / 10);
+    
+    // Beregn pallet volumen
+    const palletLength = parseFloat(document.getElementById('palletLength')?.value || 120);
+    const palletWidth = parseFloat(document.getElementById('palletWidth')?.value || 80);
+    const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+    
+    // Brug maxHeightSetting for volumen beregning (tilgængelig volumen)
+    const palletVolume = Math.max(1000, Math.min(10000000, palletLength * palletWidth * maxHeightSetting));
+    const volumeEfficiency = palletVolume > 0 ? usedVolume / palletVolume : 0;
+    
+    console.log(`📦 Pakket: ${boxes.length} kasser`);
+    console.log(`📏 Maks højde: ${maxHeight.toFixed(1)} cm`);
+    console.log(`🏗️ Antal lag: ${layerCount}`);
+    console.log(`📊 Volumen udnyttelse: ${(volumeEfficiency * 100).toFixed(1)}%`);
+    console.log(`📊 Brugt volumen: ${usedVolume.toFixed(0)} cm³ / ${palletVolume.toFixed(0)} cm³`);
+    console.log(`📏 Pallet dimensioner: ${palletLength}×${palletWidth}×${maxHeightSetting} cm`);
+    
+    // Debug logging for DOM værdier
+    console.log("🔍 Debug - DOM værdier:", {
+      palletLength: palletLength,
+      palletWidth: palletWidth,
+      maxHeightSetting: maxHeightSetting
+    });
+
+    // Valider pallet volumen
+    if (palletVolume < 1000 || palletVolume > 10000000) {
+      console.warn("⚠️ Urealistisk pallet volumen:", palletVolume, "cm³");
+    }
+
+    // Valider volume efficiency
+    if (volumeEfficiency > 1.0) {
+      console.warn("⚠️ Volume efficiency > 100%:", (volumeEfficiency * 100).toFixed(1) + "% - mulig årsag: forkert pallet dimensioner eller maxHeight");
+    }
+
+    // Pallet type detection med præcis matching - check største først
+    const EPS = 0.1;
+    const palletType = (() => {
+      // Europalle: 120×80
+      if (Math.abs(palletLength - 120) < EPS && Math.abs(palletWidth - 80) < EPS) return 'europalle';
+      // Halvpalle: 80×60 (ikke 60×80!)
+      if (Math.abs(palletLength - 80) < EPS && Math.abs(palletWidth - 60) < EPS) return 'halvpalle';
+      // Kvartpalle: 60×40
+      if (Math.abs(palletLength - 60) < EPS && Math.abs(palletWidth - 40) < EPS) return 'kvartpalle';
+      return 'custom';
+    })();
+    
+    console.log(`🎯 Pallet type: ${palletType}`);
+    console.log(`📊 Pallet area: ${palletLength * palletWidth} cm²`);
+    
+    // Valider højde compliance
+    const heightCompliance = maxHeight <= maxHeightSetting;
+    if (!heightCompliance) {
+      console.error(`❌ HØJDE OVERFLOW: Pakket højde ${maxHeight.toFixed(1)}cm overstiger max højde ${maxHeightSetting}cm`);
+    } else {
+      console.log(`✅ Højde compliance: ${maxHeight.toFixed(1)}cm ≤ ${maxHeightSetting}cm`);
+    }
+
+    return { 
+      boxCount: boxes.length, 
+      maxHeight, 
+      layerCount, 
+      volumeEfficiency,
+      heightCompliance,
+      palletType 
+    };
+  }
+
+  // Hovedtest funktion
+  function runAlgorithmTest() {
+    console.log("🚀 STARTER OMFATTENDE TEST AF PALLEBEREGNER ALGORITME");
+    console.log("=" .repeat(60));
+    
+    const results = {};
+    
+    // Test alle scenarier
+    Object.entries(TEST_SCENARIOS).forEach(([name, boxes]) => {
+      try {
+        const scenarioStats = runScenarioTest(name, boxes);
+        results[name] = { ...scenarioStats, success: true };
+      } catch (error) {
+        console.error(`❌ Fejl i scenario ${name}:`, error);
+        results[name] = { success: false, error: error.message };
+      }
+    });
+    
+    // Samlet analyse
+    console.log("\n📈 SAMLET ANALYSE:");
+    console.log("=" .repeat(40));
+    
+    const successfulTests = Object.values(results).filter(r => r.success);
+    const avgVolume = successfulTests.reduce((sum, r) => sum + r.totalVolume, 0) / successfulTests.length;
+    const avgWeight = successfulTests.reduce((sum, r) => sum + r.totalWeight, 0) / successfulTests.length;
+    
+    console.log(`✅ Gennemførte tests: ${successfulTests.length}/${Object.keys(TEST_SCENARIOS).length}`);
+    console.log(`📊 Gennemsnit volumen: ${avgVolume.toFixed(0)} cm³`);
+    console.log(`⚖️ Gennemsnit vægt: ${avgWeight.toFixed(1)} kg`);
+    
+    return results;
+  }
+
+  // Test et specifikt scenario ved at indlæse det i appen
+  function testSpecificScenario(scenarioName) {
+    if (!TEST_SCENARIOS[scenarioName]) {
+      console.error(`❌ Scenario '${scenarioName}' findes ikke`);
+      return;
+    }
+    
+    const boxes = TEST_SCENARIOS[scenarioName];
+    console.log(`🧪 Indlæser scenario: ${scenarioName}`);
+    
+    // Ryd eksisterende kasser
+    state.boxTypes = [];
+    
+    // Tilføj test kasser
+    boxes.forEach(box => {
+      state.boxTypes.push({...box});
+    });
+    
+    // Opdater UI
+    renderBoxList();
+    
+    console.log(`✅ Scenario '${scenarioName}' indlæst med ${boxes.length} kassetyper`);
+    console.log(`💡 Klik nu på 'Beregn pakning' for at teste algoritmen!`);
+    
+    return boxes;
+  }
+
+  // Valider pallet specs før pakning
+  function validatePalletSpecs() {
+    const palletLength = parseFloat(document.getElementById('palletLength')?.value || 0);
+    const palletWidth = parseFloat(document.getElementById('palletWidth')?.value || 0);
+    const maxHeight = parseFloat(document.getElementById('maxHeight')?.value || 0);
+    
+    console.log(`🔍 Validerer pallet specs:`);
+    console.log(`   Længde: ${palletLength} cm`);
+    console.log(`   Bredde: ${palletWidth} cm`);
+    console.log(`   Max højde: ${maxHeight} cm`);
+    
+    if (palletLength <= 0 || palletWidth <= 0 || maxHeight <= 0) {
+      console.error(`❌ Ugyldige pallet specs: ${palletLength}×${palletWidth}×${maxHeight}`);
+      return false;
+    }
+    
+    const palletVolume = palletLength * palletWidth * maxHeight;
+    console.log(`   Beregnet volumen: ${palletVolume} cm³`);
+    
+    return true;
+  }
+
+  // Test et scenario og kør pakning automatisk
+  async function testScenarioWithPacking(scenarioName) {
+    console.log(`🚀 TESTER SCENARIO: ${scenarioName} MED FAKTISK PAKNING`);
+    console.log("=" .repeat(50));
+    
+    // Valider pallet specs først
+    if (!validatePalletSpecs()) {
+      console.error("❌ Kan ikke teste - ugyldige pallet specs");
+      return;
+    }
+    
+    // Indlæs scenario
+    const boxes = testSpecificScenario(scenarioName);
+    if (!boxes) return;
+    
+    // Vent på UI opdatering
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Simuler klik på beregn pakning
+    const calcBtn = document.getElementById('calcBtn');
+    if (calcBtn) {
+      console.log(`📊 Starter pakning for ${scenarioName}...`);
+      calcBtn.click();
+    } else {
+      console.error("❌ Kunne ikke finde 'Beregn pakning' knap");
+    }
+  }
+
+  // Test alle scenarier med faktisk pakning
+  async function testAllScenariosWithPacking() {
+    console.log("🚀 STARTER KOMPLET TEST AF ALLE SCENARIER MED PAKNING");
+    console.log("=" .repeat(60));
+    
+    for (const [name, boxes] of Object.entries(TEST_SCENARIOS)) {
+      console.log(`\n🧪 TESTER: ${name}`);
+      await testScenarioWithPacking(name);
+      
+      // Vent mellem tests
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    
+    console.log("\n✅ ALLE SCENARIER TESTET!");
+  }
+
+  // Valider at algoritmen respekterer max højde
+  function validateAlgorithmHeightCompliance() {
+    console.log(`🔍 Validerer algoritme højde compliance...`);
+    
+    if (window._packing && window._packing.pallets && window._packing.pallets.length > 0) {
+      const pallet = window._packing.pallets[0];
+      const boxes = pallet.boxes || [];
+      
+      if (boxes.length > 0) {
+        const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+        const maxBoxHeight = Math.max(...boxes.map(box => (box.z || 0) + (box.height || 0)));
+        
+        console.log(`   Max højde setting: ${maxHeightSetting} cm`);
+        console.log(`   Faktisk max højde: ${maxBoxHeight.toFixed(1)} cm`);
+        
+        if (maxBoxHeight > maxHeightSetting + 1e-6) {
+          console.error(`❌ ALGORITME FEJL: Overskrider max højde med ${(maxBoxHeight - maxHeightSetting).toFixed(1)} cm`);
+          console.error(`   Dette indikerer en fejl i algoritmens højde validering`);
+          return false;
+        } else {
+          console.log(`✅ Algoritme respekterer max højde`);
+          return true;
+        }
+      }
+    }
+    
+    // Prøv alternativ metode hvis window._packing ikke findes
+    const packedBoxes = window.packedBoxes || [];
+    if (packedBoxes.length > 0) {
+      const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
+      const maxBoxHeight = Math.max(...packedBoxes.map(box => (box.y || 0) + (box.H || 0)));
+      
+      console.log(`   Max højde setting: ${maxHeightSetting} cm`);
+      console.log(`   Faktisk max højde: ${maxBoxHeight.toFixed(1)} cm`);
+      
+      if (maxBoxHeight > maxHeightSetting + 1e-6) {
+        console.error(`❌ ALGORITME FEJL: Overskrider max højde med ${(maxBoxHeight - maxHeightSetting).toFixed(1)} cm`);
+        return false;
+      } else {
+        console.log(`✅ Algoritme respekterer max højde`);
+        return true;
+      }
+    }
+    
+    return true;
+  }
+
+  // Test alle palle-typer med et givent scenario
+  async function testAllPalletTypes(scenarioName) {
+    console.log(`🚀 TESTER ALLE PALLETYPER MED SCENARIO: ${scenarioName}`);
+    console.log("=" .repeat(60));
+    
+    const palletTypes = ['europalle', 'halvpalle', 'kvartpalle', 'custom'];
+    const results = {};
+    
+    for (const palletType of palletTypes) {
+      console.log(`\n📦 TESTER PALLETYPE: ${palletType}`);
+      
+      // Indlæs scenario
+      const boxes = testSpecificScenario(scenarioName);
+      if (!boxes) continue;
+      
+      // Skift palle-type
+      const palletSelect = document.getElementById('palletType');
+      if (palletSelect) {
+        palletSelect.value = palletType;
+        palletSelect.dispatchEvent(new Event('change'));
+      }
+      
+      // Vent på UI opdatering
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Kør pakning
+      const calcBtn = document.getElementById('calcBtn');
+      if (calcBtn) {
+        console.log(`📊 Starter pakning for ${palletType}...`);
+        calcBtn.click();
+        
+        // Vent på resultat
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Analyser resultat
+        const packing = window._packing;
+        if (packing && packing.pallets && packing.pallets.length > 0) {
+          const analysis = analyzePackingResult(packing, `${scenarioName} + ${palletType}`);
+          results[palletType] = analysis;
+          
+          // Valider højde compliance
+          validateAlgorithmHeightCompliance();
+        }
+      }
+    }
+    
+    // Samlet analyse
+    console.log("\n📈 SAMLET ANALYSE AF ALLE PALLETYPER:");
+    console.log("=" .repeat(50));
+    
+    Object.entries(results).forEach(([type, result]) => {
+      if (result) {
+        console.log(`${type}: ${result.boxCount} kasser, ${result.maxHeight.toFixed(1)}cm højde, ${(result.volumeEfficiency * 100).toFixed(1)}% udnyttelse`);
+      }
+    });
+    
+    return results;
+  }
+
+  // Test scenario med forskellige støtte krav
+  async function testScenarioWithSupportLevels(scenarioName, supportLevels = [30, 50, 70, 90]) {
+    console.log(`🧪 TESTER SCENARIO: ${scenarioName} MED FORSKILLIGE STØTTE KRAV`);
+    console.log("=" .repeat(60));
+    
+    const results = {};
+    
+    for (const supportLevel of supportLevels) {
+      console.log(`\n📊 TESTER STØTTE NIVEAU: ${supportLevel}%`);
+      
+      // Sæt støtte niveau
+      const minSupportSlider = document.getElementById('minSupport');
+      if (minSupportSlider) {
+        minSupportSlider.value = supportLevel;
+        minSupportSlider.dispatchEvent(new Event('input'));
+      }
+      
+      // Indlæs scenario
+      const boxes = testSpecificScenario(scenarioName);
+      if (!boxes) continue;
+      
+      // Vent på UI opdatering
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      // Kør pakning
+      const calcBtn = document.getElementById('calcBtn');
+      if (calcBtn) {
+        console.log(`📦 Starter pakning med ${supportLevel}% støtte...`);
+        calcBtn.click();
+        
+        // Vent på resultat
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Analyser resultat
+        const packing = window._packing;
+        if (packing && packing.pallets && packing.pallets.length > 0) {
+          const analysis = analyzePackingResult(packing, `${scenarioName} + ${supportLevel}% støtte`);
+          results[supportLevel] = analysis;
+        }
+      }
+    }
+    
+    // Samlet analyse af støtte niveauer
+    console.log("\n📈 SAMLET ANALYSE AF STØTTE NIVEAUER:");
+    console.log("=" .repeat(50));
+    
+    Object.entries(results).forEach(([level, result]) => {
+      if (result) {
+        console.log(`${level}% støtte: ${result.boxCount} kasser, ${result.maxHeight.toFixed(1)}cm højde, ${(result.volumeEfficiency * 100).toFixed(1)}% udnyttelse`);
+      }
+    });
+    
+    return results;
+  }
+
+  // Komplet test af alle kombinationer
+  async function runCompleteAlgorithmTest() {
+    console.log("🚀 STARTER KOMPLET ALGORITME TEST - ALLE PALLETYPER + ALLE SCENARIER");
+    console.log("=" .repeat(80));
+    
+    const allResults = {};
+    
+    // Test alle scenarier på alle palle-typer
+    for (const [scenarioName, boxes] of Object.entries(TEST_SCENARIOS)) {
+      console.log(`\n🧪 TESTER SCENARIO: ${scenarioName}`);
+      allResults[scenarioName] = await testAllPalletTypes(scenarioName);
+      
+      // Vent mellem scenarier
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    // Generer komplet rapport
+    generateCompleteReport(allResults);
+    
+    return allResults;
+  }
+
+  // Hurtig test af algoritmen med få scenarier
+  async function runQuickAlgorithmTest() {
+    console.log("🚀 STARTER HURTIG ALGORITME TEST - OPTIMERET FOR HURTIG ANALYSE");
+    console.log("=" .repeat(70));
+    
+    const quickScenarios = ['quickHighSupport', 'quickLowSupport', 'quickMixed', 'realistic12'];
+    const allResults = {};
+    
+    for (const scenarioName of quickScenarios) {
+      console.log(`\n🧪 TESTER SCENARIO: ${scenarioName}`);
+      
+      // Test på europalle og halvpalle (hurtigere)
+      const palletTypes = ['europalle', 'halvpalle'];
+      const results = {};
+      
+      for (const palletType of palletTypes) {
+        console.log(`📦 TESTER PALLETYPE: ${palletType}`);
+        
+        // Indlæs scenario
+        const boxes = testSpecificScenario(scenarioName);
+        if (!boxes) continue;
+        
+        // Skift palle-type
+        const palletSelect = document.getElementById('palletType');
+        if (palletSelect) {
+          palletSelect.value = palletType;
+          palletSelect.dispatchEvent(new Event('change'));
+        }
+        
+        // Vent på UI opdatering
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        // Kør pakning
+        const calcBtn = document.getElementById('calcBtn');
+        if (calcBtn) {
+          console.log(`📊 Starter pakning for ${palletType}...`);
+          calcBtn.click();
+          
+          // Vent på resultat (kortere ventetid)
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Analyser resultat
+          const packing = window._packing;
+          if (packing && packing.pallets && packing.pallets.length > 0) {
+            const analysis = analyzePackingResult(packing, `${scenarioName} + ${palletType}`);
+            results[palletType] = analysis;
+          }
+        }
+      }
+      
+      allResults[scenarioName] = results;
+      
+      // Kort ventetid mellem scenarier
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    // Generer hurtig rapport
+    console.log("\n📊 HURTIG ALGORITME TEST RAPPORT");
+    console.log("=" .repeat(50));
+    
+    Object.entries(allResults).forEach(([scenario, palletResults]) => {
+      console.log(`\n📦 SCENARIO: ${scenario}`);
+      Object.entries(palletResults).forEach(([palletType, result]) => {
+        if (result) {
+          console.log(`   ${palletType}: ${result.boxCount} kasser, ${result.maxHeight.toFixed(1)}cm højde, ${(result.volumeEfficiency * 100).toFixed(1)}% udnyttelse`);
+        }
+      });
+    });
+    
+    return allResults;
+  }
+
+  // Generer komplet test rapport
+  function generateCompleteReport(allResults) {
+    console.log("\n📊 KOMPLET ALGORITME TEST RAPPORT");
+    console.log("=" .repeat(60));
+    
+    let totalTests = 0;
+    let successfulTests = 0;
+    let bestEfficiency = 0;
+    let worstEfficiency = 1;
+    let bestScenario = '';
+    let worstScenario = '';
+    
+    Object.entries(allResults).forEach(([scenario, palletResults]) => {
+      console.log(`\n📦 SCENARIO: ${scenario}`);
+      
+      Object.entries(palletResults).forEach(([palletType, result]) => {
+        if (result) {
+          totalTests++;
+          successfulTests++;
+          
+          const efficiency = result.volumeEfficiency;
+          if (efficiency > bestEfficiency) {
+            bestEfficiency = efficiency;
+            bestScenario = `${scenario} + ${palletType}`;
+          }
+          if (efficiency < worstEfficiency) {
+            worstEfficiency = efficiency;
+            worstScenario = `${scenario} + ${palletType}`;
+          }
+          
+          console.log(`  ${palletType}: ${(efficiency * 100).toFixed(1)}% effektivitet, ${result.maxHeight.toFixed(1)}cm højde`);
+        }
+      });
+    });
+    
+    console.log(`\n📈 SAMLET STATISTIK:`);
+    console.log(`✅ Gennemførte tests: ${successfulTests}/${totalTests}`);
+    console.log(`🏆 Bedste effektivitet: ${(bestEfficiency * 100).toFixed(1)}% (${bestScenario})`);
+    console.log(`⚠️ Værste effektivitet: ${(worstEfficiency * 100).toFixed(1)}% (${worstScenario})`);
+    console.log(`📊 Gennemsnit effektivitet: ${((bestEfficiency + worstEfficiency) / 2 * 100).toFixed(1)}%`);
+    
+    // Anbefalinger til optimering
+    console.log(`\n💡 OPTIMERING ANBEFALINGER:`);
+    if (worstEfficiency < 0.7) {
+      console.log(`⚠️ Fokus på ${worstScenario} - lav effektivitet indikerer algoritme svagheder`);
+    }
+    if (bestEfficiency > 0.9) {
+      console.log(`✅ ${bestScenario} fungerer godt - brug som reference for optimering`);
+    }
+  }
+
+  // Gør test funktioner tilgængelige globalt
+  window.testSpecificScenario = testSpecificScenario;
+  window.testScenarioWithPacking = testScenarioWithPacking;
+  window.testAllScenariosWithPacking = testAllScenariosWithPacking;
+  window.testAllPalletTypes = testAllPalletTypes;
+  window.testScenarioWithSupportLevels = testScenarioWithSupportLevels;
+  window.runQuickAlgorithmTest = runQuickAlgorithmTest;
+  window.validateAlgorithmHeightCompliance = validateAlgorithmHeightCompliance;
+  window.validatePalletSpecs = validatePalletSpecs;
+  window.runCompleteAlgorithmTest = runCompleteAlgorithmTest;
+  window.TEST_SCENARIOS = TEST_SCENARIOS;
+</script>
+
+
+<script>
+// ====== ADD-ON: Pakkeliste + Reverse Highlight (non-invasive; no changes to original handlers) ======
+(function(){
+  // Globals for add-on
+  window._hlType = window._hlType || null;
+
+  function forceRedraw(){
+    var s = document.getElementById('pitchSlider');
+    if (!s) return;
+    // fire 'input' to trigger original draw()
+    s.dispatchEvent(new Event('input', {bubbles:true}));
+  }
+
+  // Insert "Pakkeliste for denne" button under pallet tabs
+  function ensurePackingListButton(){
+    var tabsEl = document.getElementById('palletTabs');
+    if (!tabsEl) return;
+    if (document.getElementById('packingListBtn')) return;
+    var bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.cssText = 'justify-content:flex-end;margin:6px 0 8px';
+    var btn = document.createElement('button');
+    btn.id = 'packingListBtn';
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.textContent = '📄 Pakkeliste for denne';
+    btn.addEventListener('click', showPackingListForActive);
+    bar.appendChild(btn);
+    tabsEl.insertAdjacentElement('afterend', bar);
+  }
+
+  // Simple modal (independent of original showModal/closeModal)
+  function openModal(html){
+    var root = document.getElementById('addonModalRoot');
+    if (!root){
+      root = document.createElement('div');
+      root.id = 'addonModalRoot';
+      document.body.appendChild(root);
+    }
+    root.innerHTML = '<div class="modal-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;z-index:1000">\
+      <div class="modal" style="background:white;max-width:820px;width:calc(100% - 32px);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.15);padding:16px">\
+        '+ html +'\
+      </div></div>';
+    root.querySelector('.modal-overlay').addEventListener('click', function(e){ if(e.target.classList.contains('modal-overlay')) closeModal(); });
+  }
+  function closeModal(){
+    var root = document.getElementById('addonModalRoot');
+    if (root) root.innerHTML = '';
+  }
+
+  // Build packing list for active pallet
+  function getActivePalletIndex(){
+    var tabs = Array.from(document.querySelectorAll('#palletTabs .pallet-tab'));
+    var ix = tabs.findIndex(function(b){ return b.classList.contains('active'); });
+    if (ix >= 0) return ix;
+    return (window.selectedPallet || 0);
+  }
+  function showPackingListForActive(){
+    var packing = window._packing;
+    var palIdx = getActivePalletIndex();
+    if (!packing || !packing.pallets || !packing.pallets[palIdx]){
+      alert('Ingen pakning at vise endnu. Beregn først.'); return;
+    }
+    var pal = packing.pallets[palIdx];
+    var map = new Map();
+    (pal.boxes||[]).forEach(function(b){
+      var key = ( (b.name||b.typeId||'Uden navn') +'|'+ [Math.round(b.length||0),Math.round(b.width||0),Math.round(b.height||0)].join('x') );
+      var cur = map.get(key) || { name:(b.name||b.typeId||'Uden navn'), L:Math.round(b.length||0), B:Math.round(b.width||0), H:Math.round(b.height||0), count:0, weight:0 };
+      cur.count += 1; cur.weight += (b.weight||0);
+      map.set(key, cur);
+    });
+    var rows = Array.from(map.values()).sort(function(a,b){ return a.name.localeCompare(b.name,'da'); });
+    var labelBase = (document.getElementById('palletType') && document.getElementById('palletType').value === 'custom') ? 'Kolli' : 'Palle';
+    var title = labelBase + ' ' + (palIdx+1);
+    var table = rows.length ? ('<table class="mono" style="width:100%;border-collapse:collapse;margin-top:8px">'
+        + '<thead><tr><th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--border)">Vare</th>'
+        + '<th style="text-align:right;padding:6px 4px;border-bottom:1px solid var(--border)">L×B×H (cm)</th>'
+        + '<th style="text-align:right;padding:6px 4px;border-bottom:1px solid var(--border)">Antal</th>'
+        + '<th style="text-align:right;padding:6px 4px;border-bottom:1px solid var(--border)">Vægt (kg)</th></tr></thead><tbody>'
+        + rows.map(function(r){ return '<tr>\
+            <td style="padding:6px 4px;border-bottom:1px solid var(--border)">'+r.name+'</td>\
+            <td style="padding:6px 4px;text-align:right;border-bottom:1px solid var(--border)">'+r.L+'×'+r.B+'×'+r.H+'</td>\
+            <td style="padding:6px 4px;text-align:right;border-bottom:1px solid var(--border)">'+r.count+'</td>\
+            <td style="padding:6px 4px;text-align:right;border-bottom:1px solid var(--border)">'+r.weight.toFixed(2)+'</td>\
+          </tr>'; }).join('')
+        + '</tbody></table>') : '<div class="info">Ingen bokse i denne.</div>';
+    var html = '<h3>Pakkeliste – '+title+'</h3>'+ table +'<div class="actions" style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">\
+        <button class="btn" id="pl-close" type="button">Luk</button>\
+        '+ (rows.length?'<button class="btn primary" id="pl-export" type="button">Eksportér CSV</button>':'') +'\
+      </div>';
+    openModal(html);
+    var root = document.getElementById('addonModalRoot');
+    root.querySelector('#pl-close').addEventListener('click', closeModal);
+    var exp = root.querySelector('#pl-export');
+    if (exp){
+      exp.addEventListener('click', function(){
+        var csv = ['Vare;L;B;H;Antal;Vægt_kg'].concat(rows.map(function(r){ return [r.name,r.L,r.B,r.H,r.count,r.weight.toFixed(2)].join(';'); })).join('\n');
+        var blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+        var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pakkeliste_'+labelBase.toLowerCase()+'_'+(palIdx+1)+'.csv'; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },0);
+      });
+    }
+  }
+
+  // Reverse highlight from box type list -> 3D
+  function enableReverseHighlight(){
+    var boxList = document.getElementById('boxList');
+    if (!boxList) return;
+    boxList.addEventListener('click', function(e){
+      var row = e.target.closest && e.target.closest('.boxrow');
+      if (!row) return;
+      // ignore when clicking controls
+      if (e.target.closest('button') || (e.target.tagName==='INPUT' && e.target.type!=='text') || e.target.closest('label')) return;
+      var nameInput = row.querySelector('input[data-k=\"name\"]');
+      var name = (nameInput && nameInput.value || '').trim();
+      if (!name) return;
+
+      window._hlType = name;
+
+      // jump to first pallet that has this type if current active doesn't
+      try{
+        var tabs = Array.from(document.querySelectorAll('#palletTabs .pallet-tab'));
+        var activeIdx = tabs.findIndex(function(b){ return b.classList.contains('active'); });
+        var hasHere = !!((window._packing && window._packing.pallets && window._packing.pallets[activeIdx] && window._packing.pallets[activeIdx].boxes || []).some(function(b){ return (b.name||'').trim()===name; }));
+        if (!hasHere){
+          var targetIdx = (window._packing && window._packing.pallets || []).findIndex(function(p){ return (p.boxes||[]).some(function(b){ return (b.name||'').trim()===name; }); });
+          if (targetIdx>=0 && tabs[targetIdx]) tabs[targetIdx].click();
+        }
+        // outline tabs that contain the type
+        tabs.forEach(function(b, i){
+          var has = !!((window._packing && window._packing.pallets && window._packing.pallets[i] && window._packing.pallets[i].boxes || []).some(function(bb){ return (bb.name||'').trim()===name; }));
+          b.style.outline = has ? '2px solid var(--accent)' : '';
+          if (has) b.title = 'Indeholder den valgte kassetype';
+        });
+      }catch(_){}
+      forceRedraw();
+    }, true);
+  }
+
+  // Init after DOM is ready
+  function init(){
+    ensurePackingListButton();
+    enableReverseHighlight();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
+
+<script>
+// ====== ADD-ON v2: Clear highlight (Ryd farver) ======
+(function(){
+  function forceRedraw(){
+    var s = document.getElementById('pitchSlider');
+    if (!s) return;
+    s.dispatchEvent(new Event('input', {bubbles:true}));
+  }
+  function clearHighlight(){
+    window._hlType = null;
+    // remove tab outlines
+    var tabs = Array.from(document.querySelectorAll('#palletTabs .pallet-tab'));
+    tabs.forEach(function(b){ b.style.outline=''; b.removeAttribute('title'); });
+    forceRedraw();
+  }
+  // Add "Ryd highlight" button next to packing list button
+  function ensureClearBtn(){
+    var tabsEl = document.getElementById('palletTabs');
+    if (!tabsEl) return;
+    var bar = tabsEl.nextElementSibling;
+    if (!bar || !bar.classList.contains('bar')) return;
+    if (document.getElementById('clearHighlightBtn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'clearHighlightBtn';
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.style.marginLeft = '8px';
+    btn.textContent = 'Ryd highlight';
+    btn.title = 'Vis alle farver igen (ESC eller dobbeltklik i 3D virker også)';
+    btn.addEventListener('click', clearHighlight);
+    bar.appendChild(btn);
+  }
+  // ESC clears highlight
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape'){ clearHighlight(); }
+  });
+  // Double-click in 3D clears highlight
+  var canvas = document.getElementById('view');
+  if (canvas){
+    canvas.addEventListener('dblclick', function(){ clearHighlight(); }, true);
+  }
+  // Double-click on a row in the list clears highlight
+  var boxList = document.getElementById('boxList');
+  if (boxList){
+    boxList.addEventListener('dblclick', function(e){
+      var row = e.target.closest && e.target.closest('.boxrow');
+      if (!row) return;
+      clearHighlight();
+    }, true);
+  }
+  // Click active pallet tab clears highlight (handy shortcut)
+  var tabsRoot = document.getElementById('palletTabs');
+  if (tabsRoot){
+    tabsRoot.addEventListener('click', function(e){
+      var btn = e.target.closest && e.target.closest('.pallet-tab');
+      if (!btn) return;
+      if (btn.classList.contains('active') && window._hlType){ clearHighlight(); }
+    }, true);
+  }
+
+  function init(){ ensureClearBtn(); }
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
+
+<script>
+// ====== ADD-ON v3: Auto-assign unique colors to new kassetyp­er ======
+(function(){
+  // Nice distinct palette (no specific brand ties)
+  var PALETTE = [
+    '#ef4444','#f59e0b','#10b981','#3b82f6','#8b5cf6',
+    '#ec4899','#14b8a6','#22c55e','#eab308','#6366f1',
+    '#f97316','#06b6d4','#84cc16','#a855f7','#fb7185',
+    '#0ea5e9','#d946ef','#34d399','#64748b','#e11d48'
+  ];
+  function normalize(c){
+    if (!c) return '';
+    c = (''+c).trim();
+    if (/^#[0-9a-f]{3}$/i.test(c)){
+      // expand #abc -> #aabbcc
+      return '#'+c[1]+c[1]+c[2]+c[2]+c[3]+c[3];
+    }
+    return c.toLowerCase();
+  }
+  function pickNewColor(used){
+    // Prefer next in palette not yet used
+    for (var i=0;i<PALETTE.length;i++){
+      var c = normalize(PALETTE[i]);
+      if (!used.has(c)) return c;
+    }
+    // Fallback: generate HSL color with golden ratio
+    var phi = 0.61803398875;
+    var h = (Math.random() + phi) % 1;
+    var s = 0.65, l = 0.55;
+    var c = hslToHex(h*360, s*100, l*100);
+    if (!used.has(c)) return c;
+    // try a few times
+    for (var k=0;k<10;k++){
+      h = (h + phi) % 1;
+      c = hslToHex(h*360, s*100, l*100);
+      if (!used.has(c)) return c;
+    }
+    return '#888888';
+  }
+  function hslToHex(h,s,l){
+    h/=360; s/=100; l/=100;
+    var a = s*Math.min(l,1-l);
+    function f(n){
+      var k = (n+h*12)%12;
+      var col = l - a*Math.max(Math.min(k-3, 9-k, 1), -1);
+      return Math.round(255*col).toString(16).padStart(2,'0');
+    }
+    return '#'+f(0)+f(8)+f(4);
+  }
+  function isDefaultBlue(c){
+    c = normalize(c);
+    return c==='#60a5fa' || c==='#4f81bd' || c==='#3b82f6'; // common defaults
+  }
+
+  function ensureUniqueColors(){
+    try{
+      var st = window.state || {};
+      var list = st.boxTypes || [];
+      var used = new Set();
+      // Keep already user-chosen colors (not default blue)
+      list.forEach(function(bt){
+        var c = normalize(bt && bt.color);
+        if (c && !isDefaultBlue(c)) used.add(c);
+      });
+      // Assign colors for missing/default || duplicates
+      list.forEach(function(bt){
+        if (!bt) return;
+        var c = normalize(bt.color);
+        if (!c || isDefaultBlue(c) || used.has(c)){
+          var nxt = pickNewColor(used);
+          bt.color = nxt;
+          used.add(nxt);
+        } else {
+          // reserve unique
+          used.add(c);
+        }
+      });
+    }catch(e){ console.warn('ensureUniqueColors failed', e); }
+  }
+
+  // Wrap renderBoxList so colors are set just before UI builds
+  var _renderBoxList = window.renderBoxList;
+  var _guard = false;
+  if (typeof _renderBoxList === 'function'){
+    window.renderBoxList = function(){
+      if (_guard){ return _renderBoxList.apply(this, arguments); }
+      _guard = true;
+      try{ ensureUniqueColors(); }catch(_){}
+      try{ return _renderBoxList.apply(this, arguments); }
+      finally{ _guard = false; }
+    };
+  }
+
+  // Also hook CSV upload handler (if present) by observing changes
+  var listRoot = document.getElementById('boxList');
+  if (listRoot && 'MutationObserver' in window){
+    var mo = new MutationObserver(function(){
+      // if rows changed, try ensure colors then redraw
+      try{ ensureUniqueColors(); }catch(_){}
+    });
+    mo.observe(listRoot, {childList:true, subtree:false});
+  }
+
+  // One-time run on load (covers existing rows)
+  if (document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', function(){
+      try{ ensureUniqueColors(); if (typeof renderBoxList==='function') renderBoxList(); }catch(_){}
+    });
+  } else {
+    try{ ensureUniqueColors(); if (typeof renderBoxList==='function') renderBoxList(); }catch(_){}
+  }
+})();
+
+// Test miljø event listeners
+document.addEventListener('DOMContentLoaded', function() {
+  console.log('🧪 Test miljø initialiseret!');
+  console.log('📋 Tilgængelige funktioner:');
+  console.log('  - testSpecificScenario(scenarioName)');
+  console.log('  - testAllPalletTypes(scenarioName)');
+  console.log('  - testScenarioWithSupportLevels(scenarioName, [30,50,70,90])');
+  console.log('  - runQuickAlgorithmTest() - OPTIMERET FOR HURTIG ANALYSE');
+  console.log('  - runCompleteAlgorithmTest()');
+  console.log('  - TEST_SCENARIOS');
+  
+  // Test at funktionerne er tilgængelige
+  if (typeof window.testSpecificScenario === 'function') {
+    console.log('✅ testSpecificScenario tilgængelig');
+  } else {
+    console.error('❌ testSpecificScenario ikke tilgængelig');
+  }
+  
+  if (typeof window.testAllPalletTypes === 'function') {
+    console.log('✅ testAllPalletTypes tilgængelig');
+  } else {
+    console.error('❌ testAllPalletTypes ikke tilgængelig');
+  }
+  
+  if (typeof window.runQuickAlgorithmTest === 'function') {
+    console.log('✅ runQuickAlgorithmTest tilgængelig - OPTIMERET FOR HURTIG ANALYSE');
+  } else {
+    console.error('❌ runQuickAlgorithmTest ikke tilgængelig');
+  }
+  
+  console.log('💡 Anbefaling: Start med runQuickAlgorithmTest() for hurtig analyse');
+});
+</script>
+
+
+<script>
+// ====== ADD-ON v4: Unikke farver når man trykker "Tilføj kassetype" (DOM-baseret) ======
+(function(){
+  var PALETTE = [
+    '#ef4444','#f59e0b','#10b981','#3b82f6','#8b5cf6',
+    '#ec4899','#14b8a6','#22c55e','#eab308','#6366f1',
+    '#f97316','#06b6d4','#84cc16','#a855f7','#fb7185',
+    '#0ea5e9','#d946ef','#34d399','#64748b','#e11d48'
+  ];
+  function norm(c){
+    if (!c) return '';
+    c = (''+c).trim().toLowerCase();
+    if (/^#[0-9a-f]{3}$/i.test(c)){
+      return '#'+c[1]+c[1]+c[2]+c[2]+c[3]+c[3];
+    }
+    return c;
+  }
+  function isDefaultBlue(c){
+    c = norm(c);
+    return c==='#4f81bd' || c==='#60a5fa' || c==='#3b82f6' || c==='#4f82bd';
+  }
+  function hslToHex(h,s,l){
+    h/=360; s/=100; l/=100;
+    var a = s*Math.min(l,1-l);
+    function f(n){
+      var k=(n+h*12)%12, col=l-a*Math.max(Math.min(k-3,9-k,1),-1);
+      return Math.round(255*col).toString(16).padStart(2,'0');
+    }
+    return '#'+f(0)+f(8)+f(4);
+  }
+  function pickNew(used){
+    for (var i=0;i<PALETTE.length;i++){
+      var c = norm(PALETTE[i]);
+      if (!used.has(c)) return c;
+    }
+    var phi=0.61803398875, h=(Math.random()+phi)%1, s=65, l=55;
+    for (var k=0;k<24;k++){
+      var c = hslToHex(h*360,s,l);
+      if (!used.has(norm(c))) return c;
+      h=(h+phi)%1;
+    }
+    return '#888888';
+  }
+
+  function ensureColorsFromDOM(){
+    var rows = Array.from(document.querySelectorAll('#boxList .boxrow'));
+    if (!rows.length) return;
+    var colorInputs = rows.map(function(r){ return r.querySelector('input[data-k="color"]'); })
+                          .filter(Boolean);
+    var used = new Set();
+    // mark existing distinct colors first (not default blue)
+    colorInputs.forEach(function(inp){
+      var c = norm(inp.value);
+      if (c && !isDefaultBlue(c)) used.add(c);
+    });
+    // set new for those that are default blue || duplicates
+    colorInputs.forEach(function(inp){
+      var c = norm(inp.value);
+      if (!c || isDefaultBlue(c) || used.has(c)){
+        var nxt = pickNew(used);
+        if (inp.value !== nxt){
+          inp.value = nxt;
+          // fire input so original code updates bt.color
+          inp.dispatchEvent(new Event('input', {bubbles:true}));
+        }
+        used.add(norm(inp.value));
+      } else {
+        used.add(c);
+      }
+    });
+  }
+
+  function init(){
+    // Run once now (for eksisterende rækker)
+    ensureColorsFromDOM();
+
+    // Når man klikker "Tilføj kassetype"
+    var addBtn = document.getElementById('addBoxBtn');
+    if (addBtn){
+      addBtn.addEventListener('click', function(){
+        // Vent til original handler har tilføjet rækken
+        setTimeout(ensureColorsFromDOM, 0);
+      }, true); // capture to be safe, but we still delay to run after
+    }
+    // Når der uploades CSV eller listen ændrer sig
+    var list = document.getElementById('boxList');
+    if (list && 'MutationObserver' in window){
+      var mo = new MutationObserver(function(){
+        // Kald kort efter DOM ændres, så inputs findes
+        setTimeout(ensureColorsFromDOM, 0);
+      });
+      mo.observe(list, {childList:true});
+    }
+  }
+
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
 </script>
 
 </body>
