@@ -153,14 +153,6 @@
         <button id="calcBtn" class="btn primary" type="button">Beregn pakning</button>
       </div>
       
-      <div class="hr"></div>
-      <div class="bar" style="align-items:center;gap:12px">
-        <div style="flex:1">
-          <label>Min. støtte under kasse (%)</label>
-          <input id="minSupport" type="range" min="0" max="100" value="70">
-        </div>
-        <div class="mono muted" id="minSupportVal">70%</div>
-      </div>
     </div>
 
     <!-- Højre -->
@@ -230,8 +222,6 @@ function num(x){
   const pitchSlider = $('#pitchSlider');
   const layerSlider = $('#layerSlider');
   const palletTabsEl = $('#palletTabs');
-  const minSupportEl = $('#minSupport');
-  const minSupportValEl = $('#minSupportVal');
   const spinner = $('#spinner');
   const palletTypeSel = $('#palletType');
   const palletBaseInfo = $('#palletBaseInfo');
@@ -275,10 +265,6 @@ function num(x){
 
   let currentView = '3d';
   let selectedPallet = 0;
-  let minSupport = 0.70;
-  
-  // Gør minSupport tilgængelig globalt så algoritmen kan bruge den
-  window.minSupport = minSupport;
 
   // 3D rotation + hover/klik
   let yaw = 0;
@@ -403,12 +389,6 @@ function num(x){
     if (currentView==='3d') draw();
   });
 
-  minSupportEl.addEventListener('input', ()=>{
-    const v=parseInt(minSupportEl.value,10)||0;
-    minSupport = Math.max(0,Math.min(100,v))/100;
-    window.minSupport = minSupport; // Opdater global variabel
-    minSupportValEl.textContent = `${v}%`;
-  });
 
   
   /* ========== Validation & Summary UI ========== */
@@ -491,16 +471,10 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
 
   /* ====================== ALGORTIME: gammel Tetris + bund-fix ====================== */
   const EPS = 1e-6;
-        // Dynamic support demand based on box weight && placement height
+        // Support demand function - modified to always allow placement (no support requirements)
         const supportDemand = (weight, zTop) => {
-          // base tiers by weight
-          let base = 0.20; // light boxes
-          if (weight >= 2.5) base = 0.28;
-          if (weight >= 4.0) base = 0.34;
-          if (weight >= 6.0) base = 0.40;
-          // slightly relax demand higher up the stack (max -15% at top)
-          const relax = 1.0 - Math.min(0.15, (zTop / Math.max(1, palSpec.maxHeight)) * 0.15);
-          return Math.min(0.8, Math.max(window.minSupport || 0, base * relax));
+          // Always return 0 to disable support requirements
+          return 0;
         };
 
         // Forbedret sortering for optimal pakning - prioriterer kompakthed og lav højde
@@ -811,14 +785,8 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
      // højde pr. celle
     // === Dynamic helpers (scoped to this run) ===
     const supportDemand = (weight, zTop) => {
-      // base tiers by weight
-      let base = 0.20; // light boxes
-      if (weight >= 2.5) base = 0.28;
-      if (weight >= 4.0) base = 0.34;
-      if (weight >= 6.0) base = 0.40;
-      // slightly relax demand higher up the stack (max -15% at top)
-      const relax = 1.0 - Math.min(0.15, (zTop / Math.max(1, palSpec.maxHeight)) * 0.15);
-      return Math.min(0.8, Math.max(window.minSupport || 0, base * relax));
+      // Always return 0 to disable support requirements
+      return 0;
     };
 
         const sortBoxTypesForThisStep = () => {
@@ -867,17 +835,8 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       const areaSumUnder = (ix,iy,w,l) => { let s=0; for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) s+=H[x][y]; return s; };
       const maxUnder     = (ix,iy,w,l) => { let m=0; for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) if (H[x][y]>m) m=H[x][y]; return m; };
       const supportRatioAtTop = (ix,iy,w,l,top) => {
-      let c = 0, cells = w*l;
-      const needed = Math.ceil(cells * (window.minSupport || 0.7));
-      for (let x = ix; x < ix + w; x++) {
-        for (let y = iy; y < iy + l; y++) {
-          if (Math.abs(H[x][y] - top) <= EPS) {
-            c++;
-            if (c >= needed) return needed / cells;
-          }
-        }
-      }
-      return c / cells;
+      // Always return 1 (100% support) to disable support requirements
+      return 1;
     };
       // Average height on 1-cell border around a candidate footprint
       const borderAvgAround = (ix,iy,w,l) => {
@@ -1134,7 +1093,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                 
                 // Special case: "I bund" boxes at ground level (z=0) should always be allowed
                 const isBottomRequiredAtGround = tb.bottomRequired && topB <= EPS;
-                if (!isBottomRequiredAtGround && coverB < (window.minSupport||0)) continue;
+                // Support check removed - always allow placement
                 if (topB + h > palSpec.maxHeight + EPS) continue;
                 
                 hasBottomAtMinLayer = true;
@@ -1163,7 +1122,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                 
                 // Special case: "I bund" boxes at ground level (z=0) should always be allowed
                 const isBottomRequiredAtGround = tb2.bottomRequired && top2 <= EPS;
-                if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
+                // Support check removed - always allow placement
                 if (top2 + h2 > palSpec.maxHeight + EPS) continue;
                 
                 hasAnyAtMinLayer = true;
@@ -1256,7 +1215,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                 }
 
 const isBottomRequiredStacked = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > EPS && hasBottomRequiredUnder;
-if (!isBottomRequiredAtGround && !isBottomRequiredStacked && cover < (window.minSupport||0)) continue;
+// Support check removed - always allow placement
                 // Streng højde validering - stop hvis vi overskrider max højde
                 if (top + h > palSpec.maxHeight + EPS) {
                   const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
@@ -1329,7 +1288,7 @@ if (!isBottomRequiredAtGround && !isBottomRequiredStacked && cover < (window.min
                   peakWeight * peakAfter + compactWeight*localRise + 0.8*heightRisk - foundationBonus * baseBonus - baseAreaBonus * 0.4 + tallEarlyBias,
                   holeScore + layerCompletion * tetrisWeight, // Kompaktheds-bonus
                   (addedVol + fitBias) * 0.5,
-                  -cover * 2.2,
+                  // Support penalty removed
                   -divisibleBonus * 3.0,
                   h * heightBias,
                   // Bonus for "I bund" kasser i bunden (reduceret fra 5.0 til 2.0)
@@ -1386,7 +1345,7 @@ if (!isBottomRequiredAtGround && !isBottomRequiredStacked && cover < (window.min
 // Exempt 'I bund' at ground and unify threshold with slider
 const isBottomRequiredAtGround2 = tb && typeof tb.bottomRequired === 'boolean' && tb.bottomRequired === true && top2 <= EPS;
 const demand2 = Math.max((window.minSupport||0), supportDemand(tb.weight||0, top2));
-                  if (!isBottomRequiredAtGround2 && cover2 < demand2) continue;
+                  // Support check removed - always allow placement
                   // Streng højde validering i lookahead
                   if (top2 + h2 > palSpec.maxHeight + EPS) {
                     const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
@@ -1443,7 +1402,7 @@ const demand2 = Math.max((window.minSupport||0), supportDemand(tb.weight||0, top
 // Special case: "I bund" boxes at ground level (z=0) should always be allowed
 // regardless of support requirements since they sit directly on the pallet
                   const isBottomRequiredAtGround = t2 && typeof t2.bottomRequired === 'boolean' && t2.bottomRequired === true && top2 <= EPS;
-                  if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
+                  // Support check removed - always allow placement
                   // I bund-regler i second pass: bottomRequired kræver bottomRequired under
                   if (t2 && typeof t2.bottomRequired === 'boolean' && t2.bottomRequired === true && top2 > 0) {
                     const brUnder2 = hasBottomRequiredUnderAt(ix2, iy2, w2, l2, top2);
@@ -1469,7 +1428,7 @@ const demand2 = Math.max((window.minSupport||0), supportDemand(tb.weight||0, top
                   const score2 = [
                     3.0 * peakAfter2 + 1.2*localRise2 + 0.8*heightRisk2 - foundationBonus2 * 0.6 - baseAreaBonus2 * 0.4 + tallEarlyBias2,
                     (addedVol2 + fitBias2) * 0.5,
-                    -cover2 * 2.2,
+                    // Support penalty removed
                     -divisibleBonus2 * 3.0,
                     h2 * 0.12,
                     // Stærkere bonus for kompakt placering i first second pass
@@ -1561,7 +1520,7 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
 // Special case: "I bund" boxes at ground level (z=0) should always be allowed
 // regardless of support requirements since they sit directly on the pallet
                   const isBottomRequiredAtGround = t3 && typeof t3.bottomRequired === 'boolean' && t3.bottomRequired === true && top3 <= EPS;
-                  if (!isBottomRequiredAtGround && cover3 < 0.98) continue; // kræv næsten fuld støtte
+                  // Support check removed - always allow placement
                   // Streng højde validering i third pass
                   if (top3 + h3 > palSpec.maxHeight + EPS) {
                     const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
@@ -1683,7 +1642,7 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   // Special case: "I bund" boxes at ground level (z=0) should always be allowed
                   // regardless of support requirements since they sit directly on the pallet
                   const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
-                  if (!isBottomRequiredAtGround && cover < (window.minSupport||0)) continue;
+                  // Support check removed - always allow placement
                   if (t.weight > weightLeft + EPS) continue;
                   // I bund-regler i repack fase B
                   if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
@@ -1745,7 +1704,7 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   // Special case: "I bund" boxes at ground level (z=0) should always be allowed
                   // regardless of support requirements since they sit directly on the pallet
                   const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
-                  if (!isBottomRequiredAtGround && cover < (window.minSupport||0)) continue;
+                  // Support check removed - always allow placement
                   if (t.weight > weightLeft + EPS) continue;
                   // I bund-regler i repack fase B (fortsat)
                   if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
