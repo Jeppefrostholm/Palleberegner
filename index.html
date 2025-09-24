@@ -3162,8 +3162,8 @@ try {
     const reader = new FileReader();
     reader.onload = (e) => {
       let parsed = parseCsvToBoxTypes(e.target.result);
-      // Swap L<->H to ensure L=length, H=height in UI
-      parsed = parsed.map(b => ({...b, L:b.H, H:b.L}));
+      // CSV columns are already in correct order: length_cm, width_cm, height_cm
+      // No need to swap L and H
       
       if (parsed.length === 0) { 
         alert("CSV-filen er tom eller mangler gyldige rækker."); 
