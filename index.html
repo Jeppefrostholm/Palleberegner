@@ -938,7 +938,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       {
         const ref = { value: weightLeft };
         
-        // Først: placer alle "I bund" kasser i bunden (z=0)
+        // FIXED: Placer "I bund" kasser kun i bunden (z=0) - ikke stak dem
         // Debug: log alle box types og deres bottomRequired status
         console.log('Box types input:', boxTypesInput);
         console.log('Box types with bottomRequired:', boxTypesInput.filter(t => t && t.bottomRequired));
@@ -979,11 +979,11 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
               const w = Math.round(o.l / G), l = Math.round(o.w / G);
               let placed = false;
               
-              // Find bedste bund-placering (minimere hul)
+              // FIXED: Find bedste bund-placering (kun i bunden, ikke stakning)
               let bestPlacement = null;
               for (let iy = 0; iy <= Ny - l; iy++) {
                 for (let ix = 0; ix <= Nx - w; ix++) {
-                  // Tjek om området er ledigt i bunden
+                  // Tjek om området er ledigt i bunden (z=0)
                   let canPlace = true;
                   for (let x = ix; x < ix + w; x++) {
                     for (let y = iy; y < iy + l; y++) {
@@ -1017,11 +1017,11 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                 // Placer kassen
                 raiseRectTo(bestPlacement.ix, bestPlacement.iy, w, l, o.h);
                 
-                // Valider box objekt før tilføjelse
+                // FIXED: Placer "I bund" kasse kun i bunden (z=0)
                 const newBox = {
                   x: bestPlacement.ix*G, 
                   y: bestPlacement.iy*G, 
-                  z: 0,
+                  z: 0, // FIXED: Altid z=0 for "I bund" kasser
                   length: o.l, 
                   width: o.w, 
                   height: o.h,
@@ -1061,7 +1061,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
           }
         }
         
-        // Derefter: kald den oprindelige bottomPass for resten
+        // FIXED: Kald den oprindelige bottomPass for resten (ikke "I bund" kasser)
         const didBottom = bottomPass({
           pallet: palSpec, boxTypesInput, remainingById,
           G, Nx, Ny, H, raiseRectTo, pal, weightLeftRef: ref, hasGroundPlacement, bottomColumnLocks
@@ -1096,17 +1096,17 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
         }
       }
 
-      // (2) Greedy tetris – minimer peak-højde først
-      while (true) {
-        let best = null;
-        const candList = [];
+        // (2) Greedy tetris – minimer peak-højde først
+        while (true) {
+          let best = null;
+          const candList = [];
 
-        // PRIORITY PASS: Always try to stack "I bund" boxes first for optimal compactness
-        for (const t of sortBoxTypesForThisStep()) {
-          const left = remainingById[t.id];
-          if (!(left===Infinity || left>0)) continue;
-          if (!t || typeof t.bottomRequired !== 'boolean' || !t.bottomRequired) continue; // Only "I bund" boxes
-          if (t.weight > weightLeft + EPS) continue;
+          // FIXED: Prioriter "I bund" kasser kun i bunden, ikke stakning
+          for (const t of sortBoxTypesForThisStep()) {
+            const left = remainingById[t.id];
+            if (!(left===Infinity || left>0)) continue;
+            if (!t || typeof t.bottomRequired !== 'boolean' || !t.bottomRequired) continue; // Only "I bund" boxes
+            if (t.weight > weightLeft + EPS) continue;
           
           for (const o of orientationsFor(t)) {
             if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
@@ -1119,21 +1119,19 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                 // Height validation
                 if (top + h > palSpec.maxHeight + EPS) continue;
                 
-                // For "I bund" boxes, only allow stacking on other "I bund" boxes or ground
+                // FIXED: For "I bund" boxes, only allow ground placement (z=0)
                 const isAtGround = top <= EPS;
-                const hasBottomRequiredUnder = isAtGround || hasBottomRequiredUnderAt(ix, iy, w, l, top);
                 
-                if (!hasBottomRequiredUnder) continue; // Skip if not proper "I bund" stacking
+                if (!isAtGround) continue; // FIXED: Skip if not at ground level
                 
-                // MASSIVE PRIORITY SCORING for "I bund" stacking
+                // FIXED: Prioritér bund-placering over stakning for "I bund" kasser
                 const peakAfter = Math.max(hMaxAll(), top + h);
-                const stackingBonus = hasBottomRequiredUnderAt(ix, iy, w, l, top) ? -5000 : 0; // Huge bonus for stacking on "I bund"
-                const groundBonus = isAtGround ? -3000 : 0; // Large bonus for ground placement
-                const compactBonus = -(top + h) * 2.0; // Strong bonus for low placement
-                const sameTypeBonus = hasSameTypeBottomRequiredUnderAt(ix, iy, w, l, top, t.id) ? -2000 : 0; // Bonus for same type stacking
+                const groundBonus = isAtGround ? -1000 : 0; // Stærk bonus for bund-placering
+                const stackingPenalty = !isAtGround ? 500 : 0; // Penalty for stakning (ikke bund)
+                const compactBonus = -(top + h) * 1.0; // Moderat bonus for lav placering
                 
                 const score = [
-                  stackingBonus + groundBonus + compactBonus + sameTypeBonus,
+                  groundBonus + stackingPenalty + compactBonus,
                   -peakAfter, // Minimize peak height
                   -(o.l * o.w * o.h), // Prefer larger boxes
                   ix, // Prefer left placement
@@ -1626,10 +1624,10 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   const localRise3 = Math.max(0, (top3 + h3) - Math.max(localAvg3, top3));
                   const peakAfter3 = Math.max(hMaxAll(), top3 + h3);
                   
-                  // FIXED: Better scoring for 'I bund' compliance
+                  // FIXED: Better scoring for 'I bund' compliance - prioritér bund-placering
                   const score3 = [
-                    // Heavily penalize 'I bund' boxes placed incorrectly, reward ground placement
-                    t3.bottomRequired ? (isBottomRequiredAtGround ? -1000 : (hasBottomRequiredUnderAt(ix3, iy3, w3, l3, top3) ? 100 : 2000)) : 3.0 * peakAfter3 + 1.0*localRise3,
+                    // Stærk bonus for bund-placering, penalty for stakning
+                    t3.bottomRequired ? (isBottomRequiredAtGround ? -2000 : 1000) : 3.0 * peakAfter3 + 1.0*localRise3,
                     -(o3.l * o3.w * o3.h),
                     // Stærkere bonus for kompakt placering i third pass
                     -(top3 + h3) * 0.3,
@@ -1803,12 +1801,10 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   // FIXED: Proper 'I bund' compliance in repack phase B
                   const isBottomRequiredAtGround = top <= EPS;
                   if (t.weight > weightLeft + EPS) continue;
-                  // I bund-regler i repack fase B (forbedret)
+                  // I bund-regler i repack fase B (forbedret) - tillad kun bund-placering
                   if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && !isBottomRequiredAtGround) {
-                    const brUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
-                    if (!brUnder) continue;
-                    // Also require minimum support when elevated
-                    if (cover < 0.8) continue;
+                    // FIXED: Tillad kun bund-placering for "I bund" kasser
+                    continue;
                   }
                   const peakAfter = Math.max(top + h, Math.max(0, ...H.flat()));
                   const score = [ 
