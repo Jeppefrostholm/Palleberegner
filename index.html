@@ -903,6 +903,37 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
         }
       };
 
+      // Helper function to check for same type "I bund" box underneath
+      const hasSameTypeBottomRequiredUnderAt = (ix, iy, w, l, top, typeId) => {
+        try {
+          if (!pal || !pal.boxes || !Array.isArray(pal.boxes)) return false;
+          if (!boxTypesInput || !Array.isArray(boxTypesInput)) return false;
+          
+          for (let x = ix; x < ix + w; x++) {
+            for (let y = iy; y < iy + l; y++) {
+              const boxUnder = pal.boxes.find(b => {
+                if (!b || typeof b.x !== 'number' || typeof b.y !== 'number') return false;
+                const bx = Math.round(b.x / G);
+                const by = Math.round(b.y / G);
+                const bw = Math.round(b.length / G);
+                const bl = Math.round(b.width / G);
+                return bx <= x && x < bx + bw && by <= y && y < by + bl && Math.abs((b.z + b.height) - top) < EPS;
+              });
+              if (boxUnder && boxUnder.typeId === typeId) {
+                const typeUnder = boxTypesInput.find(tu => tu.id === boxUnder.typeId);
+                if (typeUnder && typeof typeUnder.bottomRequired === 'boolean' && typeUnder.bottomRequired === true) {
+                  return true;
+                }
+              }
+            }
+          }
+          return false;
+        } catch (error) {
+          console.error('Error in hasSameTypeBottomRequiredUnderAt:', error);
+          return false;
+        }
+      };
+
       // (1) Forbedret bund-pass - prioriterer "I bund" kasser i bunden
       {
         const ref = { value: weightLeft };
@@ -1069,6 +1100,59 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       while (true) {
         let best = null;
         const candList = [];
+
+        // PRIORITY PASS: Always try to stack "I bund" boxes first for optimal compactness
+        for (const t of sortBoxTypesForThisStep()) {
+          const left = remainingById[t.id];
+          if (!(left===Infinity || left>0)) continue;
+          if (!t || typeof t.bottomRequired !== 'boolean' || !t.bottomRequired) continue; // Only "I bund" boxes
+          if (t.weight > weightLeft + EPS) continue;
+          
+          for (const o of orientationsFor(t)) {
+            if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
+            const w = Math.round(o.l / G), l = Math.round(o.w / G), h = o.h;
+            
+            for (let ix = 0; ix <= Nx - w; ix++) {
+              for (let iy = 0; iy <= Ny - l; iy++) {
+                const top = maxUnder(ix,iy,w,l);
+                
+                // Height validation
+                if (top + h > palSpec.maxHeight + EPS) continue;
+                
+                // For "I bund" boxes, only allow stacking on other "I bund" boxes or ground
+                const isAtGround = top <= EPS;
+                const hasBottomRequiredUnder = isAtGround || hasBottomRequiredUnderAt(ix, iy, w, l, top);
+                
+                if (!hasBottomRequiredUnder) continue; // Skip if not proper "I bund" stacking
+                
+                // MASSIVE PRIORITY SCORING for "I bund" stacking
+                const peakAfter = Math.max(hMaxAll(), top + h);
+                const stackingBonus = hasBottomRequiredUnderAt(ix, iy, w, l, top) ? -5000 : 0; // Huge bonus for stacking on "I bund"
+                const groundBonus = isAtGround ? -3000 : 0; // Large bonus for ground placement
+                const compactBonus = -(top + h) * 2.0; // Strong bonus for low placement
+                const sameTypeBonus = hasSameTypeBottomRequiredUnderAt(ix, iy, w, l, top, t.id) ? -2000 : 0; // Bonus for same type stacking
+                
+                const score = [
+                  stackingBonus + groundBonus + compactBonus + sameTypeBonus,
+                  -peakAfter, // Minimize peak height
+                  -(o.l * o.w * o.h), // Prefer larger boxes
+                  ix, // Prefer left placement
+                  iy  // Prefer bottom placement
+                ];
+                
+                if (!best || lexLess(score, best.score)) {
+                  best = { t, o, ix, iy, w, l, h, top, score, isPriorityBottomRequired: true };
+                  console.log(`🔸 Priority "I bund" found: ${t.name} at height ${top}cm, stacking: ${!isAtGround}`);
+                }
+              }
+            }
+          }
+        }
+
+        // If we found a priority "I bund" placement, use it immediately
+        if (best && best.isPriorityBottomRequired) {
+          console.log(`✅ Using priority "I bund" placement: ${best.t.name} at height ${best.top}cm`);
+        } else {
 
         // Forbedret lag-håndtering: tillad fleksibel placering for bedre kompakthed
         const minLayerTop = hMinAll();
@@ -1497,13 +1581,14 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
           if (best2) best = best2;
         }
 
-        // Third pass: SOFT 'I bund' fallback — allow first-of-type 'I bund' boxes to start on a fully-supported plateau
+        // Third pass: IMPROVED 'I bund' placement — allow 'I bund' boxes with proper compliance checking
         if (!best) {
           let best3 = null;
           for (const t3 of sortBoxTypesForThisStep()) {
             const left3 = remainingById[t3.id];
             if (!(left3===Infinity || left3>0)) continue;
-            if (!t3 || typeof t3.bottomRequired !== 'boolean' || !t3.bottomRequired || hasGroundPlacement[t3.id]) continue; // only first-of-type 'I bund'
+            // Allow multiple 'I bund' boxes of same type - removed hasGroundPlacement check
+            if (!t3 || typeof t3.bottomRequired !== 'boolean' || !t3.bottomRequired) continue;
             if (t3.weight > weightLeft + EPS) continue;
             for (const o3 of orientationsFor(t3)) {
               if (o3.l > palSpec.length + EPS || o3.w > palSpec.width + EPS) continue;
@@ -1520,10 +1605,17 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                 for (let iy3 = 0; iy3 <= Ny - l3; iy3++) {
                   const top3 = maxUnder(ix3,iy3,w3,l3);
                   const cover3 = supportRatioAtTop(ix3, iy3, w3, l3, top3);
-// Special case: "I bund" boxes at ground level (z=0) should always be allowed
-// regardless of support requirements since they sit directly on the pallet
-                  const isBottomRequiredAtGround = t3 && typeof t3.bottomRequired === 'boolean' && t3.bottomRequired === true && top3 <= EPS;
-                  // Support check removed - always allow placement
+                  
+                  // FIXED: Proper 'I bund' compliance checking
+                  const isBottomRequiredAtGround = top3 <= EPS;
+                  if (t3.bottomRequired && !isBottomRequiredAtGround) {
+                    // If not at ground level, check if there's proper 'I bund' support underneath
+                    const hasBottomRequiredUnder = hasBottomRequiredUnderAt(ix3, iy3, w3, l3, top3);
+                    if (!hasBottomRequiredUnder) continue;
+                    // Also require minimum support ratio when elevated
+                    if (cover3 < 0.8) continue;
+                  }
+                  
                   // Streng højde validering i third pass
                   if (top3 + h3 > palSpec.maxHeight + EPS) {
                     const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
@@ -1533,8 +1625,11 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   const localAvg3 = borderAvgAround(ix3,iy3,w3,l3);
                   const localRise3 = Math.max(0, (top3 + h3) - Math.max(localAvg3, top3));
                   const peakAfter3 = Math.max(hMaxAll(), top3 + h3);
+                  
+                  // FIXED: Better scoring for 'I bund' compliance
                   const score3 = [
-                    3.0 * peakAfter3 + 1.0*localRise3,
+                    // Heavily penalize 'I bund' boxes placed incorrectly, reward ground placement
+                    t3.bottomRequired ? (isBottomRequiredAtGround ? -1000 : (hasBottomRequiredUnderAt(ix3, iy3, w3, l3, top3) ? 100 : 2000)) : 3.0 * peakAfter3 + 1.0*localRise3,
                     -(o3.l * o3.w * o3.h),
                     // Stærkere bonus for kompakt placering i third pass
                     -(top3 + h3) * 0.3,
@@ -1549,6 +1644,8 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
           }
           if (best3) best = best3;
         }
+
+        } // End of else block for normal placement
 
         if (!best) break;
 
@@ -1565,6 +1662,11 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
         weightLeft -= best.t.weight;
         if (remainingById[best.t.id] !== Infinity) remainingById[best.t.id]--;
         if (best.top === 0) hasGroundPlacement[best.t.id] = true;
+
+        // Enhanced logging for 'I bund' compliance
+        if (best.t.bottomRequired && best.top > EPS) {
+          console.log(`🔍 'I bund' kasse ${best.t.name || best.t.id} placeret på højde ${best.top.toFixed(1)}cm - tjek compliance`);
+        }
 
         pal.boxes.push({ x: best.ix*G, y: best.iy*G, z: best.top, length: best.o.l, width: best.o.w, height: best.o.h, typeId: best.t.id, color: best.t.color, name: best.t.name||best.t.id , weight: best.t.weight });
         
@@ -1642,16 +1744,10 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                     continue;
                   }
                   const cover = supportRatioAtTop(ix, iy, w, l, top);
-                  // Special case: "I bund" boxes at ground level (z=0) should always be allowed
-                  // regardless of support requirements since they sit directly on the pallet
-                  const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
-                  // Support check removed - always allow placement
+                  // FIXED: Proper 'I bund' compliance in repack phase A (ground level only in phase A)
+                  const isBottomRequiredAtGround = top <= EPS;
                   if (t.weight > weightLeft + EPS) continue;
-                  // I bund-regler i repack fase B
-                  if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
-                    const brUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
-                    if (!brUnder) continue;
-                  }
+                  // Since phase A only places at ground level, no additional checks needed for 'I bund'
                   // prefer larger base area && more bottom-left
                   const score = [ 
                     -(o.l*o.w), // Største base først
@@ -1704,15 +1800,15 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   }
                   // support at this top
                   const cover = supportRatioAtTop(ix, iy, w, l, top);
-                  // Special case: "I bund" boxes at ground level (z=0) should always be allowed
-                  // regardless of support requirements since they sit directly on the pallet
-                  const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
-                  // Support check removed - always allow placement
+                  // FIXED: Proper 'I bund' compliance in repack phase B
+                  const isBottomRequiredAtGround = top <= EPS;
                   if (t.weight > weightLeft + EPS) continue;
-                  // I bund-regler i repack fase B (fortsat)
-                  if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
+                  // I bund-regler i repack fase B (forbedret)
+                  if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && !isBottomRequiredAtGround) {
                     const brUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
                     if (!brUnder) continue;
+                    // Also require minimum support when elevated
+                    if (cover < 0.8) continue;
                   }
                   const peakAfter = Math.max(top + h, Math.max(0, ...H.flat()));
                   const score = [ 
@@ -2263,7 +2359,8 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
             weight:+b.weight, count:Math.max(1, +b.count||1),
             color:b.color||'', flatOnly:!!b.flatOnly, bottomRequired:!!b.bottomRequired
           }));
-          const result = handleExistingSampak(sel, {maxL:innerL, maxB:innerB, maxH:innerH, maxW: 1e9}, {sideThickness:sT, bottomThickness:bT, topThickness:tT});
+          // Kald handleExistingSampak med YDRE mål og tykkelser (den trækker selv tykkelser fra)
+          const result = handleExistingSampak(sel, {maxL:overbox.L, maxB:overbox.B, maxH:overbox.H, maxW: 1e9}, {sideThickness:sT, bottomThickness:bT, topThickness:tT});
           const ob = result && result.overboxes && result.overboxes[0];
           overbox.innerBoxes = (ob && ob.innerBoxes) ? ob.innerBoxes.map(b=>({ x:b.x, y:b.y, z:b.z, length:b.length, width:b.width, height:b.height, color:b.color, name:b.name, weight:b.weight })) : [];
           // Fit/advarsel status
@@ -2340,6 +2437,8 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
       angleEl.addEventListener('input', e=>{ pitch = -((parseInt(e.target.value,10)||30) * Math.PI/180); draw(); });
       cutEl.addEventListener('input', ()=> draw());
 
+      // Synkroniser 3D med aktuelle mål ved åbning
+      recomputePackForCurrentDims();
       draw();
 
       function updateOverboxDims(){
@@ -2463,11 +2562,9 @@ function draw3D(pal, boxes, sliceZ, baseHeight){
     // 2) Re-pack indholdet inde i den EKSISTERENDE overkasse (bevar L/B/H)
     try{
       const sT = +(bt.sideThickness ?? 0.5), bT = +(bt.bottomThickness ?? 0.5), tT = +(bt.topThickness ?? 0.5);
-      const innerL = Math.max(0, bt.L - 2*sT);
-      const innerB = Math.max(0, bt.B - 2*sT);
-      const innerH = Math.max(0, bt.H - (bT + tT));
       const sel = keep.map(b=>({ name:b.name, L:+b.L, B:+b.B, H:+b.H, weight:+b.weight, count:Math.max(1,+b.count||1), color:b.color||'', flatOnly:!!b.flatOnly, bottomRequired:!!b.bottomRequired }));
-      const result = handleExistingSampak(sel, {maxL:innerL, maxB:innerB, maxH:innerH, maxW: 1e9}, {sideThickness:0, bottomThickness:0, topThickness:0});
+      // Brug YDRE mål + tykkelser så beregning matcher åbning af popup
+      const result = handleExistingSampak(sel, {maxL:bt.L, maxB:bt.B, maxH:bt.H, maxW: 1e9}, {sideThickness:sT, bottomThickness:bT, topThickness:tT});
       const ob = result && result.overboxes && result.overboxes[0];
       bt.innerBoxes = (ob && ob.innerBoxes) ? ob.innerBoxes.map(b=>({ x:b.x, y:b.y, z:b.z, length:b.length, width:b.width, height:b.height, color:b.color, name:b.name, weight:b.weight })) : [];
     }catch(_){ bt.innerBoxes = []; }
@@ -4164,868 +4261,9 @@ window.addEventListener('error', function(e){
   })();
   // === END CSV EXPORTER ===
 
-  // ==================== ALGORITME TEST FUNKTIONER ====================
-  
-  // Test scenarier for algoritme analyse
-  const TEST_SCENARIOS = {
-    
-    // SCENARIO 1: Standard kasser - test grundlæggende Tetris
-    standard: [
-      { name: "Lille", L: 20, B: 15, H: 10, weight: 0.5, count: 50, color: "#FF6B6B", flatOnly: false, bottomRequired: false },
-      { name: "Medium", L: 30, B: 25, H: 20, weight: 1.2, count: 30, color: "#4ECDC4", flatOnly: false, bottomRequired: false },
-      { name: "Stor", L: 40, B: 35, H: 25, weight: 2.5, count: 20, color: "#45B7D1", flatOnly: false, bottomRequired: false }
-    ],
-
-    // SCENARIO 2: Låste kasser (flatOnly) - test rotation begrænsninger
-    locked: [
-      { name: "Låst Lille", L: 15, B: 12, H: 8, weight: 0.3, count: 40, color: "#96CEB4", flatOnly: true, bottomRequired: false },
-      { name: "Låst Stor", L: 35, B: 28, H: 22, weight: 2.0, count: 25, color: "#FFEAA7", flatOnly: true, bottomRequired: false },
-      { name: "Fri Lille", L: 18, B: 14, H: 9, weight: 0.4, count: 35, color: "#DDA0DD", flatOnly: false, bottomRequired: false }
-    ],
-
-    // SCENARIO 3: I bund kasser - test bund-placering logik
-    bottomRequired: [
-      { name: "Bund Lille", L: 25, B: 20, H: 15, weight: 0.8, count: 20, color: "#FF8C42", flatOnly: false, bottomRequired: true },
-      { name: "Bund Stor", L: 45, B: 40, H: 30, weight: 3.0, count: 15, color: "#8B4513", flatOnly: false, bottomRequired: true },
-      { name: "Normal", L: 22, B: 18, H: 12, weight: 0.6, count: 30, color: "#32CD32", flatOnly: false, bottomRequired: false }
-    ],
-
-    // SCENARIO 4: Blandet kompleksitet - test algoritmens fleksibilitet
-    mixed: [
-      { name: "Bund Tung", L: 50, B: 45, H: 35, weight: 4.5, count: 10, color: "#DC143C", flatOnly: false, bottomRequired: true },
-      { name: "Låst Høj", L: 20, B: 18, H: 40, weight: 1.8, count: 25, color: "#FF69B4", flatOnly: true, bottomRequired: false },
-      { name: "Fri Kompakt", L: 28, B: 25, H: 16, weight: 1.1, count: 35, color: "#20B2AA", flatOnly: false, bottomRequired: false },
-      { name: "Bund Låst", L: 38, B: 32, H: 24, weight: 2.8, count: 18, color: "#FF4500", flatOnly: true, bottomRequired: true }
-    ],
-
-    // SCENARIO 5: Ekstreme tilfælde - test algoritmens robusthed
-    extreme: [
-      { name: "Meget Flad", L: 60, B: 50, H: 8, weight: 1.5, count: 12, color: "#9370DB", flatOnly: false, bottomRequired: false },
-      { name: "Meget Høj", L: 15, B: 12, H: 45, weight: 2.2, count: 20, color: "#FF1493", flatOnly: false, bottomRequired: false },
-      { name: "Meget Bred", L: 25, B: 70, H: 18, weight: 2.8, count: 15, color: "#00CED1", flatOnly: false, bottomRequired: false },
-      { name: "Kube", L: 30, B: 30, H: 30, weight: 2.5, count: 25, color: "#FFD700", flatOnly: false, bottomRequired: false }
-    ],
-
-    // SCENARIO 6: Tetris udfordringer - test algoritmens intelligens
-    tetrisChallenge: [
-      { name: "L-form", L: 40, B: 15, H: 20, weight: 1.8, count: 15, color: "#FF6347", flatOnly: false, bottomRequired: false },
-      { name: "T-form", L: 35, B: 25, H: 18, weight: 1.5, count: 20, color: "#40E0D0", flatOnly: false, bottomRequired: false },
-      { name: "Z-form", L: 30, B: 20, H: 22, weight: 1.3, count: 25, color: "#EE82EE", flatOnly: false, bottomRequired: false },
-      { name: "Firkant", L: 25, B: 25, H: 25, weight: 1.6, count: 30, color: "#F0E68C", flatOnly: false, bottomRequired: false }
-    ],
-
-    // SCENARIO 7: Realistisk 12-kasse scenario - OPTIMERET for hurtigere test (5 paller max)
-    realistic12: [
-      // Store kasser (grundlag) - reduceret antal
-      { name: "Euro Pallet", L: 120, B: 80, H: 15, weight: 8.0, count: 1, color: "#8B4513", flatOnly: true, bottomRequired: true },
-      { name: "Halv Pallet", L: 60, B: 80, H: 20, weight: 5.5, count: 2, color: "#A0522D", flatOnly: true, bottomRequired: true },
-      
-      // Medium kasser (hovedprodukt) - reduceret antal
-      { name: "Stor Kasse", L: 50, B: 40, H: 30, weight: 3.2, count: 4, color: "#DC143C", flatOnly: false, bottomRequired: false },
-      { name: "Medium Kasse", L: 40, B: 30, H: 25, weight: 2.1, count: 6, color: "#FF4500", flatOnly: false, bottomRequired: false },
-      { name: "Standard Kasse", L: 35, B: 25, H: 20, weight: 1.5, count: 8, color: "#FF6347", flatOnly: false, bottomRequired: false },
-      
-      // Små kasser (fyld) - reduceret antal
-      { name: "Lille Kasse", L: 25, B: 20, H: 15, weight: 0.8, count: 10, color: "#FF69B4", flatOnly: false, bottomRequired: false },
-      { name: "Mini Kasse", L: 20, B: 15, H: 12, weight: 0.5, count: 12, color: "#FF1493", flatOnly: false, bottomRequired: false },
-      
-      // Låste kasser (særlige krav) - reduceret antal
-      { name: "Låst Stor", L: 45, B: 35, H: 28, weight: 2.8, count: 3, color: "#32CD32", flatOnly: true, bottomRequired: false },
-      { name: "Låst Medium", L: 30, B: 25, H: 22, weight: 1.8, count: 5, color: "#00CED1", flatOnly: true, bottomRequired: false },
-      
-      // Ekstreme former - reduceret antal
-      { name: "Flad Kasse", L: 60, B: 50, H: 8, weight: 1.2, count: 4, color: "#9370DB", flatOnly: false, bottomRequired: false },
-      { name: "Høj Kasse", L: 18, B: 15, H: 45, weight: 2.5, count: 6, color: "#FFD700", flatOnly: false, bottomRequired: false },
-      { name: "Kube", L: 30, B: 30, H: 30, weight: 2.0, count: 8, color: "#FF8C00", flatOnly: false, bottomRequired: false }
-    ],
-
-    // SCENARIO 8: Hurtig test med høj støtte krav (70-80%)
-    quickHighSupport: [
-      { name: "Bund Tung", L: 50, B: 45, H: 35, weight: 4.5, count: 2, color: "#DC143C", flatOnly: false, bottomRequired: true },
-      { name: "Låst Høj", L: 20, B: 18, H: 40, weight: 1.8, count: 3, color: "#FF69B4", flatOnly: true, bottomRequired: false },
-      { name: "Fri Kompakt", L: 28, B: 25, H: 16, weight: 1.1, count: 5, color: "#20B2AA", flatOnly: false, bottomRequired: false },
-      { name: "Bund Låst", L: 38, B: 32, H: 24, weight: 2.8, count: 2, color: "#FF4500", flatOnly: true, bottomRequired: true }
-    ],
-
-    // SCENARIO 9: Hurtig test med lav støtte krav (30-50%)
-    quickLowSupport: [
-      { name: "Lille Stabil", L: 25, B: 20, H: 15, weight: 0.8, count: 4, color: "#FF8C42", flatOnly: false, bottomRequired: false },
-      { name: "Medium Let", L: 35, B: 28, H: 22, weight: 1.5, count: 3, color: "#4ECDC4", flatOnly: false, bottomRequired: false },
-      { name: "Stor Tung", L: 45, B: 40, H: 30, weight: 3.0, count: 2, color: "#8B4513", flatOnly: false, bottomRequired: false },
-      { name: "Kube Let", L: 30, B: 30, H: 30, weight: 2.0, count: 3, color: "#FFD700", flatOnly: false, bottomRequired: false }
-    ],
-
-    // SCENARIO 10: Hurtig test med blandet kompleksitet
-    quickMixed: [
-      { name: "Bund Stor", L: 60, B: 50, H: 25, weight: 5.0, count: 1, color: "#8B4513", flatOnly: false, bottomRequired: true },
-      { name: "Låst Medium", L: 30, B: 25, H: 20, weight: 1.8, count: 4, color: "#32CD32", flatOnly: true, bottomRequired: false },
-      { name: "Fri Lille", L: 20, B: 15, H: 12, weight: 0.5, count: 6, color: "#FF69B4", flatOnly: false, bottomRequired: false },
-      { name: "Høj Smal", L: 15, B: 12, H: 40, weight: 2.2, count: 3, color: "#FF1493", flatOnly: false, bottomRequired: false }
-    ]
-  };
-
-  // Test funktioner
-  function runScenarioTest(scenarioName, boxTypes) {
-    console.log(`\n🧪 TESTER SCENARIO: ${scenarioName}`);
-    console.log(`📦 Antal kassetyper: ${boxTypes.length}`);
-    
-    // Analyser kassetyper
-    const totalVolume = boxTypes.reduce((sum, box) => sum + (box.L * box.B * box.H * box.count), 0);
-    const totalWeight = boxTypes.reduce((sum, box) => sum + (box.weight * box.count), 0);
-    const lockedCount = boxTypes.filter(box => box.flatOnly).length;
-    const bottomCount = boxTypes.filter(box => box.bottomRequired).length;
-    
-    console.log(`📊 Total volumen: ${totalVolume.toFixed(0)} cm³`);
-    console.log(`⚖️ Total vægt: ${totalWeight.toFixed(1)} kg`);
-    console.log(`🔒 Låste kasser: ${lockedCount}`);
-    console.log(`⬇️ I bund kasser: ${bottomCount}`);
-    
-    return { totalVolume, totalWeight, lockedCount, bottomCount };
-  }
-
-  function analyzePackingResult(packing, scenarioName) {
-    if (!packing || !packing.pallets || packing.pallets.length === 0) {
-      console.log(`❌ Ingen pakning fundet for ${scenarioName}`);
-      return null;
-    }
-    
-    const pallet = packing.pallets[0];
-    const boxes = pallet.boxes || [];
-    
-    // Beregn effektivitet
-    const usedVolume = boxes.reduce((sum, box) => {
-      const boxVolume = (box.length || 0) * (box.width || 0) * (box.height || 0);
-      return sum + boxVolume;
-    }, 0);
-    
-    const maxHeight = Math.max(...boxes.map(box => (box.z || 0) + (box.height || 0)));
-    const layerCount = Math.ceil(maxHeight / 10);
-    
-    // Beregn pallet volumen
-    const palletLength = parseFloat(document.getElementById('palletLength')?.value || 120);
-    const palletWidth = parseFloat(document.getElementById('palletWidth')?.value || 80);
-    const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
-    
-    // Brug maxHeightSetting for volumen beregning (tilgængelig volumen)
-    const palletVolume = Math.max(1000, Math.min(10000000, palletLength * palletWidth * maxHeightSetting));
-    const volumeEfficiency = palletVolume > 0 ? usedVolume / palletVolume : 0;
-    
-    console.log(`📦 Pakket: ${boxes.length} kasser`);
-    console.log(`📏 Maks højde: ${maxHeight.toFixed(1)} cm`);
-    console.log(`🏗️ Antal lag: ${layerCount}`);
-    console.log(`📊 Volumen udnyttelse: ${(volumeEfficiency * 100).toFixed(1)}%`);
-    console.log(`📊 Brugt volumen: ${usedVolume.toFixed(0)} cm³ / ${palletVolume.toFixed(0)} cm³`);
-    console.log(`📏 Pallet dimensioner: ${palletLength}×${palletWidth}×${maxHeightSetting} cm`);
-    
-    // Debug logging for DOM værdier
-    console.log("🔍 Debug - DOM værdier:", {
-      palletLength: palletLength,
-      palletWidth: palletWidth,
-      maxHeightSetting: maxHeightSetting
-    });
-
-    // Valider pallet volumen
-    if (palletVolume < 1000 || palletVolume > 10000000) {
-      console.warn("⚠️ Urealistisk pallet volumen:", palletVolume, "cm³");
-    }
-
-    // Valider volume efficiency
-    if (volumeEfficiency > 1.0) {
-      console.warn("⚠️ Volume efficiency > 100%:", (volumeEfficiency * 100).toFixed(1) + "% - mulig årsag: forkert pallet dimensioner eller maxHeight");
-    }
-
-    // Pallet type detection med præcis matching - check største først
-    const EPS = 0.1;
-    const palletType = (() => {
-      // Europalle: 120×80
-      if (Math.abs(palletLength - 120) < EPS && Math.abs(palletWidth - 80) < EPS) return 'europalle';
-      // Halvpalle: 80×60 (ikke 60×80!)
-      if (Math.abs(palletLength - 80) < EPS && Math.abs(palletWidth - 60) < EPS) return 'halvpalle';
-      // Kvartpalle: 60×40
-      if (Math.abs(palletLength - 60) < EPS && Math.abs(palletWidth - 40) < EPS) return 'kvartpalle';
-      return 'custom';
-    })();
-    
-    console.log(`🎯 Pallet type: ${palletType}`);
-    console.log(`📊 Pallet area: ${palletLength * palletWidth} cm²`);
-    
-    // Valider højde compliance
-    const heightCompliance = maxHeight <= maxHeightSetting;
-    if (!heightCompliance) {
-      console.error(`❌ HØJDE OVERFLOW: Pakket højde ${maxHeight.toFixed(1)}cm overstiger max højde ${maxHeightSetting}cm`);
-    } else {
-      console.log(`✅ Højde compliance: ${maxHeight.toFixed(1)}cm ≤ ${maxHeightSetting}cm`);
-    }
-
-    return { 
-      boxCount: boxes.length, 
-      maxHeight, 
-      layerCount, 
-      volumeEfficiency,
-      heightCompliance,
-      palletType 
-    };
-  }
-
-  // Hovedtest funktion
-  function runAlgorithmTest() {
-    console.log("🚀 STARTER OMFATTENDE TEST AF PALLEBEREGNER ALGORITME");
-    console.log("=" .repeat(60));
-    
-    const results = {};
-    
-    // Test alle scenarier
-    Object.entries(TEST_SCENARIOS).forEach(([name, boxes]) => {
-      try {
-        const scenarioStats = runScenarioTest(name, boxes);
-        results[name] = { ...scenarioStats, success: true };
-      } catch (error) {
-        console.error(`❌ Fejl i scenario ${name}:`, error);
-        results[name] = { success: false, error: error.message };
-      }
-    });
-    
-    // Samlet analyse
-    console.log("\n📈 SAMLET ANALYSE:");
-    console.log("=" .repeat(40));
-    
-    const successfulTests = Object.values(results).filter(r => r.success);
-    const avgVolume = successfulTests.reduce((sum, r) => sum + r.totalVolume, 0) / successfulTests.length;
-    const avgWeight = successfulTests.reduce((sum, r) => sum + r.totalWeight, 0) / successfulTests.length;
-    
-    console.log(`✅ Gennemførte tests: ${successfulTests.length}/${Object.keys(TEST_SCENARIOS).length}`);
-    console.log(`📊 Gennemsnit volumen: ${avgVolume.toFixed(0)} cm³`);
-    console.log(`⚖️ Gennemsnit vægt: ${avgWeight.toFixed(1)} kg`);
-    
-    return results;
-  }
-
-  // Test et specifikt scenario ved at indlæse det i appen
-  function testSpecificScenario(scenarioName) {
-    if (!TEST_SCENARIOS[scenarioName]) {
-      console.error(`❌ Scenario '${scenarioName}' findes ikke`);
-      return;
-    }
-    
-    const boxes = TEST_SCENARIOS[scenarioName];
-    console.log(`🧪 Indlæser scenario: ${scenarioName}`);
-    
-    // Ryd eksisterende kasser
-    state.boxTypes = [];
-    
-    // Tilføj test kasser
-    boxes.forEach(box => {
-      state.boxTypes.push({...box});
-    });
-    
-    // Opdater UI
-    renderBoxList();
-    
-    console.log(`✅ Scenario '${scenarioName}' indlæst med ${boxes.length} kassetyper`);
-    console.log(`💡 Klik nu på 'Beregn pakning' for at teste algoritmen!`);
-    
-    return boxes;
-  }
-
-  // Valider pallet specs før pakning
-  function validatePalletSpecs() {
-    const palletLength = parseFloat(document.getElementById('palletLength')?.value || 0);
-    const palletWidth = parseFloat(document.getElementById('palletWidth')?.value || 0);
-    const maxHeight = parseFloat(document.getElementById('maxHeight')?.value || 0);
-    
-    console.log(`🔍 Validerer pallet specs:`);
-    console.log(`   Længde: ${palletLength} cm`);
-    console.log(`   Bredde: ${palletWidth} cm`);
-    console.log(`   Max højde: ${maxHeight} cm`);
-    
-    if (palletLength <= 0 || palletWidth <= 0 || maxHeight <= 0) {
-      console.error(`❌ Ugyldige pallet specs: ${palletLength}×${palletWidth}×${maxHeight}`);
-      return false;
-    }
-    
-    const palletVolume = palletLength * palletWidth * maxHeight;
-    console.log(`   Beregnet volumen: ${palletVolume} cm³`);
-    
-    return true;
-  }
-
-  // Test et scenario og kør pakning automatisk
-  async function testScenarioWithPacking(scenarioName) {
-    console.log(`🚀 TESTER SCENARIO: ${scenarioName} MED FAKTISK PAKNING`);
-    console.log("=" .repeat(50));
-    
-    // Valider pallet specs først
-    if (!validatePalletSpecs()) {
-      console.error("❌ Kan ikke teste - ugyldige pallet specs");
-      return;
-    }
-    
-    // Indlæs scenario
-    const boxes = testSpecificScenario(scenarioName);
-    if (!boxes) return;
-    
-    // Vent på UI opdatering
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Simuler klik på beregn pakning
-    const calcBtn = document.getElementById('calcBtn');
-    if (calcBtn) {
-      console.log(`📊 Starter pakning for ${scenarioName}...`);
-      calcBtn.click();
-    } else {
-      console.error("❌ Kunne ikke finde 'Beregn pakning' knap");
-    }
-  }
-
-  // Test alle scenarier med faktisk pakning
-  async function testAllScenariosWithPacking() {
-    console.log("🚀 STARTER KOMPLET TEST AF ALLE SCENARIER MED PAKNING");
-    console.log("=" .repeat(60));
-    
-    for (const [name, boxes] of Object.entries(TEST_SCENARIOS)) {
-      console.log(`\n🧪 TESTER: ${name}`);
-      await testScenarioWithPacking(name);
-      
-      // Vent mellem tests
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-    
-    console.log("\n✅ ALLE SCENARIER TESTET!");
-  }
-
-  // Valider at algoritmen respekterer max højde
-  function validateAlgorithmHeightCompliance() {
-    console.log(`🔍 Validerer algoritme højde compliance...`);
-    
-    if (window._packing && window._packing.pallets && window._packing.pallets.length > 0) {
-      const pallet = window._packing.pallets[0];
-      const boxes = pallet.boxes || [];
-      
-      if (boxes.length > 0) {
-        const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
-        const maxBoxHeight = Math.max(...boxes.map(box => (box.z || 0) + (box.height || 0)));
-        
-        console.log(`   Max højde setting: ${maxHeightSetting} cm`);
-        console.log(`   Faktisk max højde: ${maxBoxHeight.toFixed(1)} cm`);
-        
-        if (maxBoxHeight > maxHeightSetting + 1e-6) {
-          console.error(`❌ ALGORITME FEJL: Overskrider max højde med ${(maxBoxHeight - maxHeightSetting).toFixed(1)} cm`);
-          console.error(`   Dette indikerer en fejl i algoritmens højde validering`);
-          return false;
-        } else {
-          console.log(`✅ Algoritme respekterer max højde`);
-          return true;
-        }
-      }
-    }
-    
-    // Prøv alternativ metode hvis window._packing ikke findes
-    const packedBoxes = window.packedBoxes || [];
-    if (packedBoxes.length > 0) {
-      const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
-      const maxBoxHeight = Math.max(...packedBoxes.map(box => (box.y || 0) + (box.H || 0)));
-      
-      console.log(`   Max højde setting: ${maxHeightSetting} cm`);
-      console.log(`   Faktisk max højde: ${maxBoxHeight.toFixed(1)} cm`);
-      
-      if (maxBoxHeight > maxHeightSetting + 1e-6) {
-        console.error(`❌ ALGORITME FEJL: Overskrider max højde med ${(maxBoxHeight - maxHeightSetting).toFixed(1)} cm`);
-        return false;
-      } else {
-        console.log(`✅ Algoritme respekterer max højde`);
-        return true;
-      }
-    }
-    
-    return true;
-  }
-
-  // Test alle palle-typer med et givent scenario
-  async function testAllPalletTypes(scenarioName) {
-    console.log(`🚀 TESTER ALLE PALLETYPER MED SCENARIO: ${scenarioName}`);
-    console.log("=" .repeat(60));
-    
-    const palletTypes = ['europalle', 'halvpalle', 'kvartpalle', 'custom'];
-    const results = {};
-    
-    for (const palletType of palletTypes) {
-      console.log(`\n📦 TESTER PALLETYPE: ${palletType}`);
-      
-      // Indlæs scenario
-      const boxes = testSpecificScenario(scenarioName);
-      if (!boxes) continue;
-      
-      // Skift palle-type
-      const palletSelect = document.getElementById('palletType');
-      if (palletSelect) {
-        palletSelect.value = palletType;
-        palletSelect.dispatchEvent(new Event('change'));
-      }
-      
-      // Vent på UI opdatering
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Kør pakning
-      const calcBtn = document.getElementById('calcBtn');
-      if (calcBtn) {
-        console.log(`📊 Starter pakning for ${palletType}...`);
-        calcBtn.click();
-        
-        // Vent på resultat
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        // Analyser resultat
-        const packing = window._packing;
-        if (packing && packing.pallets && packing.pallets.length > 0) {
-          const analysis = analyzePackingResult(packing, `${scenarioName} + ${palletType}`);
-          results[palletType] = analysis;
-          
-          // Valider højde compliance
-          validateAlgorithmHeightCompliance();
-        }
-      }
-    }
-    
-    // Samlet analyse
-    console.log("\n📈 SAMLET ANALYSE AF ALLE PALLETYPER:");
-    console.log("=" .repeat(50));
-    
-    Object.entries(results).forEach(([type, result]) => {
-      if (result) {
-        console.log(`${type}: ${result.boxCount} kasser, ${result.maxHeight.toFixed(1)}cm højde, ${(result.volumeEfficiency * 100).toFixed(1)}% udnyttelse`);
-      }
-    });
-    
-    return results;
-  }
-
-  // Test scenario med forskellige støtte krav
-  async function testScenarioWithSupportLevels(scenarioName, supportLevels = [30, 50, 70, 90]) {
-    console.log(`🧪 TESTER SCENARIO: ${scenarioName} MED FORSKILLIGE STØTTE KRAV`);
-    console.log("=" .repeat(60));
-    
-    const results = {};
-    
-    for (const supportLevel of supportLevels) {
-      console.log(`\n📊 TESTER STØTTE NIVEAU: ${supportLevel}%`);
-      
-      // Sæt støtte niveau
-      const minSupportSlider = document.getElementById('minSupport');
-      if (minSupportSlider) {
-        minSupportSlider.value = supportLevel;
-        minSupportSlider.dispatchEvent(new Event('input'));
-      }
-      
-      // Indlæs scenario
-      const boxes = testSpecificScenario(scenarioName);
-      if (!boxes) continue;
-      
-      // Vent på UI opdatering
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
-      // Kør pakning
-      const calcBtn = document.getElementById('calcBtn');
-      if (calcBtn) {
-        console.log(`📦 Starter pakning med ${supportLevel}% støtte...`);
-        calcBtn.click();
-        
-        // Vent på resultat
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // Analyser resultat
-        const packing = window._packing;
-        if (packing && packing.pallets && packing.pallets.length > 0) {
-          const analysis = analyzePackingResult(packing, `${scenarioName} + ${supportLevel}% støtte`);
-          results[supportLevel] = analysis;
-        }
-      }
-    }
-    
-    // Samlet analyse af støtte niveauer
-    console.log("\n📈 SAMLET ANALYSE AF STØTTE NIVEAUER:");
-    console.log("=" .repeat(50));
-    
-    Object.entries(results).forEach(([level, result]) => {
-      if (result) {
-        console.log(`${level}% støtte: ${result.boxCount} kasser, ${result.maxHeight.toFixed(1)}cm højde, ${(result.volumeEfficiency * 100).toFixed(1)}% udnyttelse`);
-      }
-    });
-    
-    return results;
-  }
-
-  // Komplet test af alle kombinationer
-  async function runCompleteAlgorithmTest() {
-    console.log("🚀 STARTER KOMPLET ALGORITME TEST - ALLE PALLETYPER + ALLE SCENARIER");
-    console.log("=" .repeat(80));
-    
-    const allResults = {};
-    
-    // Test alle scenarier på alle palle-typer
-    for (const [scenarioName, boxes] of Object.entries(TEST_SCENARIOS)) {
-      console.log(`\n🧪 TESTER SCENARIO: ${scenarioName}`);
-      allResults[scenarioName] = await testAllPalletTypes(scenarioName);
-      
-      // Vent mellem scenarier
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    
-    // Generer komplet rapport
-    generateCompleteReport(allResults);
-    
-    return allResults;
-  }
-
-  // Hurtig test af algoritmen med få scenarier
-  async function runQuickAlgorithmTest() {
-    console.log("🚀 STARTER HURTIG ALGORITME TEST - OPTIMERET FOR HURTIG ANALYSE");
-    console.log("=" .repeat(70));
-    
-    const quickScenarios = ['quickHighSupport', 'quickLowSupport', 'quickMixed', 'realistic12'];
-    const allResults = {};
-    
-    for (const scenarioName of quickScenarios) {
-      console.log(`\n🧪 TESTER SCENARIO: ${scenarioName}`);
-      
-      // Test på europalle og halvpalle (hurtigere)
-      const palletTypes = ['europalle', 'halvpalle'];
-      const results = {};
-      
-      for (const palletType of palletTypes) {
-        console.log(`📦 TESTER PALLETYPE: ${palletType}`);
-        
-        // Indlæs scenario
-        const boxes = testSpecificScenario(scenarioName);
-        if (!boxes) continue;
-        
-        // Skift palle-type
-        const palletSelect = document.getElementById('palletType');
-        if (palletSelect) {
-          palletSelect.value = palletType;
-          palletSelect.dispatchEvent(new Event('change'));
-        }
-        
-        // Vent på UI opdatering
-        await new Promise(resolve => setTimeout(resolve, 300));
-        
-        // Kør pakning
-        const calcBtn = document.getElementById('calcBtn');
-        if (calcBtn) {
-          console.log(`📊 Starter pakning for ${palletType}...`);
-          calcBtn.click();
-          
-          // Vent på resultat (kortere ventetid)
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-          // Analyser resultat
-          const packing = window._packing;
-          if (packing && packing.pallets && packing.pallets.length > 0) {
-            const analysis = analyzePackingResult(packing, `${scenarioName} + ${palletType}`);
-            results[palletType] = analysis;
-          }
-        }
-      }
-      
-      allResults[scenarioName] = results;
-      
-      // Kort ventetid mellem scenarier
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-    
-    // Generer hurtig rapport
-    console.log("\n📊 HURTIG ALGORITME TEST RAPPORT");
-    console.log("=" .repeat(50));
-    
-    Object.entries(allResults).forEach(([scenario, palletResults]) => {
-      console.log(`\n📦 SCENARIO: ${scenario}`);
-      Object.entries(palletResults).forEach(([palletType, result]) => {
-        if (result) {
-          console.log(`   ${palletType}: ${result.boxCount} kasser, ${result.maxHeight.toFixed(1)}cm højde, ${(result.volumeEfficiency * 100).toFixed(1)}% udnyttelse`);
-        }
-      });
-    });
-    
-    return allResults;
-  }
-
-  // Generer komplet test rapport
-  function generateCompleteReport(allResults) {
-    console.log("\n📊 KOMPLET ALGORITME TEST RAPPORT");
-    console.log("=" .repeat(60));
-    
-    let totalTests = 0;
-    let successfulTests = 0;
-    let bestEfficiency = 0;
-    let worstEfficiency = 1;
-    let bestScenario = '';
-    let worstScenario = '';
-    
-    Object.entries(allResults).forEach(([scenario, palletResults]) => {
-      console.log(`\n📦 SCENARIO: ${scenario}`);
-      
-      Object.entries(palletResults).forEach(([palletType, result]) => {
-        if (result) {
-          totalTests++;
-          successfulTests++;
-          
-          const efficiency = result.volumeEfficiency;
-          if (efficiency > bestEfficiency) {
-            bestEfficiency = efficiency;
-            bestScenario = `${scenario} + ${palletType}`;
-          }
-          if (efficiency < worstEfficiency) {
-            worstEfficiency = efficiency;
-            worstScenario = `${scenario} + ${palletType}`;
-          }
-          
-          console.log(`  ${palletType}: ${(efficiency * 100).toFixed(1)}% effektivitet, ${result.maxHeight.toFixed(1)}cm højde`);
-        }
-      });
-    });
-    
-    console.log(`\n📈 SAMLET STATISTIK:`);
-    console.log(`✅ Gennemførte tests: ${successfulTests}/${totalTests}`);
-    console.log(`🏆 Bedste effektivitet: ${(bestEfficiency * 100).toFixed(1)}% (${bestScenario})`);
-    console.log(`⚠️ Værste effektivitet: ${(worstEfficiency * 100).toFixed(1)}% (${worstScenario})`);
-    console.log(`📊 Gennemsnit effektivitet: ${((bestEfficiency + worstEfficiency) / 2 * 100).toFixed(1)}%`);
-    
-    // Anbefalinger til optimering
-    console.log(`\n💡 OPTIMERING ANBEFALINGER:`);
-    if (worstEfficiency < 0.7) {
-      console.log(`⚠️ Fokus på ${worstScenario} - lav effektivitet indikerer algoritme svagheder`);
-    }
-    if (bestEfficiency > 0.9) {
-      console.log(`✅ ${bestScenario} fungerer godt - brug som reference for optimering`);
-    }
-  }
-
-  // Gør test funktioner tilgængelige globalt
-  window.testSpecificScenario = testSpecificScenario;
-  window.testScenarioWithPacking = testScenarioWithPacking;
-  window.testAllScenariosWithPacking = testAllScenariosWithPacking;
-  window.testAllPalletTypes = testAllPalletTypes;
-  window.testScenarioWithSupportLevels = testScenarioWithSupportLevels;
-  window.runQuickAlgorithmTest = runQuickAlgorithmTest;
-  window.validateAlgorithmHeightCompliance = validateAlgorithmHeightCompliance;
-  window.validatePalletSpecs = validatePalletSpecs;
-  window.runCompleteAlgorithmTest = runCompleteAlgorithmTest;
-  window.TEST_SCENARIOS = TEST_SCENARIOS;
-</script>
 
 
-<script>
-// ====== ADD-ON: Pakkeliste + Reverse Highlight (non-invasive; no changes to original handlers) ======
-(function(){
-  // Globals for add-on
-  window._hlType = window._hlType || null;
-
-  function forceRedraw(){
-    var s = document.getElementById('pitchSlider');
-    if (!s) return;
-    // fire 'input' to trigger original draw()
-    s.dispatchEvent(new Event('input', {bubbles:true}));
-  }
-
-  // Insert "Pakkeliste for denne" button under pallet tabs
-  function ensurePackingListButton(){
-    var tabsEl = document.getElementById('palletTabs');
-    if (!tabsEl) return;
-    if (document.getElementById('packingListBtn')) return;
-    var bar = document.createElement('div');
-    bar.className = 'bar';
-    bar.style.cssText = 'justify-content:flex-end;margin:6px 0 8px';
-    var btn = document.createElement('button');
-    btn.id = 'packingListBtn';
-    btn.type = 'button';
-    btn.className = 'btn';
-    btn.textContent = '📄 Pakkeliste for denne';
-    btn.addEventListener('click', showPackingListForActive);
-    bar.appendChild(btn);
-    tabsEl.insertAdjacentElement('afterend', bar);
-  }
-
-  // Simple modal (independent of original showModal/closeModal)
-  function openModal(html){
-    var root = document.getElementById('addonModalRoot');
-    if (!root){
-      root = document.createElement('div');
-      root.id = 'addonModalRoot';
-      document.body.appendChild(root);
-    }
-    root.innerHTML = '<div class="modal-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;z-index:1000">\
-      <div class="modal" style="background:white;max-width:820px;width:calc(100% - 32px);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.15);padding:16px">\
-        '+ html +'\
-      </div></div>';
-    root.querySelector('.modal-overlay').addEventListener('click', function(e){ if(e.target.classList.contains('modal-overlay')) closeModal(); });
-  }
-  function closeModal(){
-    var root = document.getElementById('addonModalRoot');
-    if (root) root.innerHTML = '';
-  }
-
-  // Build packing list for active pallet
-  function getActivePalletIndex(){
-    var tabs = Array.from(document.querySelectorAll('#palletTabs .pallet-tab'));
-    var ix = tabs.findIndex(function(b){ return b.classList.contains('active'); });
-    if (ix >= 0) return ix;
-    return (window.selectedPallet || 0);
-  }
-  function showPackingListForActive(){
-    var packing = window._packing;
-    var palIdx = getActivePalletIndex();
-    if (!packing || !packing.pallets || !packing.pallets[palIdx]){
-      alert('Ingen pakning at vise endnu. Beregn først.'); return;
-    }
-    var pal = packing.pallets[palIdx];
-    var map = new Map();
-    (pal.boxes||[]).forEach(function(b){
-      var key = ( (b.name||b.typeId||'Uden navn') +'|'+ [Math.round(b.length||0),Math.round(b.width||0),Math.round(b.height||0)].join('x') );
-      var cur = map.get(key) || { name:(b.name||b.typeId||'Uden navn'), L:Math.round(b.length||0), B:Math.round(b.width||0), H:Math.round(b.height||0), count:0, weight:0 };
-      cur.count += 1; cur.weight += (b.weight||0);
-      map.set(key, cur);
-    });
-    var rows = Array.from(map.values()).sort(function(a,b){ return a.name.localeCompare(b.name,'da'); });
-    var labelBase = (document.getElementById('palletType') && document.getElementById('palletType').value === 'custom') ? 'Kolli' : 'Palle';
-    var title = labelBase + ' ' + (palIdx+1);
-    var table = rows.length ? ('<table class="mono" style="width:100%;border-collapse:collapse;margin-top:8px">'
-        + '<thead><tr><th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--border)">Vare</th>'
-        + '<th style="text-align:right;padding:6px 4px;border-bottom:1px solid var(--border)">L×B×H (cm)</th>'
-        + '<th style="text-align:right;padding:6px 4px;border-bottom:1px solid var(--border)">Antal</th>'
-        + '<th style="text-align:right;padding:6px 4px;border-bottom:1px solid var(--border)">Vægt (kg)</th></tr></thead><tbody>'
-        + rows.map(function(r){ return '<tr>\
-            <td style="padding:6px 4px;border-bottom:1px solid var(--border)">'+r.name+'</td>\
-            <td style="padding:6px 4px;text-align:right;border-bottom:1px solid var(--border)">'+r.L+'×'+r.B+'×'+r.H+'</td>\
-            <td style="padding:6px 4px;text-align:right;border-bottom:1px solid var(--border)">'+r.count+'</td>\
-            <td style="padding:6px 4px;text-align:right;border-bottom:1px solid var(--border)">'+r.weight.toFixed(2)+'</td>\
-          </tr>'; }).join('')
-        + '</tbody></table>') : '<div class="info">Ingen bokse i denne.</div>';
-    var html = '<h3>Pakkeliste – '+title+'</h3>'+ table +'<div class="actions" style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">\
-        <button class="btn" id="pl-close" type="button">Luk</button>\
-        '+ (rows.length?'<button class="btn primary" id="pl-export" type="button">Eksportér CSV</button>':'') +'\
-      </div>';
-    openModal(html);
-    var root = document.getElementById('addonModalRoot');
-    root.querySelector('#pl-close').addEventListener('click', closeModal);
-    var exp = root.querySelector('#pl-export');
-    if (exp){
-      exp.addEventListener('click', function(){
-        var csv = ['Vare;L;B;H;Antal;Vægt_kg'].concat(rows.map(function(r){ return [r.name,r.L,r.B,r.H,r.count,r.weight.toFixed(2)].join(';'); })).join('\n');
-        var blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
-        var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pakkeliste_'+labelBase.toLowerCase()+'_'+(palIdx+1)+'.csv'; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },0);
-      });
-    }
-  }
-
-  // Reverse highlight from box type list -> 3D
-  function enableReverseHighlight(){
-    var boxList = document.getElementById('boxList');
-    if (!boxList) return;
-    boxList.addEventListener('click', function(e){
-      var row = e.target.closest && e.target.closest('.boxrow');
-      if (!row) return;
-      // ignore when clicking controls
-      if (e.target.closest('button') || (e.target.tagName==='INPUT' && e.target.type!=='text') || e.target.closest('label')) return;
-      var nameInput = row.querySelector('input[data-k=\"name\"]');
-      var name = (nameInput && nameInput.value || '').trim();
-      if (!name) return;
-
-      window._hlType = name;
-
-      // jump to first pallet that has this type if current active doesn't
-      try{
-        var tabs = Array.from(document.querySelectorAll('#palletTabs .pallet-tab'));
-        var activeIdx = tabs.findIndex(function(b){ return b.classList.contains('active'); });
-        var hasHere = !!((window._packing && window._packing.pallets && window._packing.pallets[activeIdx] && window._packing.pallets[activeIdx].boxes || []).some(function(b){ return (b.name||'').trim()===name; }));
-        if (!hasHere){
-          var targetIdx = (window._packing && window._packing.pallets || []).findIndex(function(p){ return (p.boxes||[]).some(function(b){ return (b.name||'').trim()===name; }); });
-          if (targetIdx>=0 && tabs[targetIdx]) tabs[targetIdx].click();
-        }
-        // outline tabs that contain the type
-        tabs.forEach(function(b, i){
-          var has = !!((window._packing && window._packing.pallets && window._packing.pallets[i] && window._packing.pallets[i].boxes || []).some(function(bb){ return (bb.name||'').trim()===name; }));
-          b.style.outline = has ? '2px solid var(--accent)' : '';
-          if (has) b.title = 'Indeholder den valgte kassetype';
-        });
-      }catch(_){}
-      forceRedraw();
-    }, true);
-  }
-
-  // Init after DOM is ready
-  function init(){
-    ensurePackingListButton();
-    enableReverseHighlight();
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
-})();
-</script>
-
-
-<script>
-// ====== ADD-ON v2: Clear highlight (Ryd farver) ======
-(function(){
-  function forceRedraw(){
-    var s = document.getElementById('pitchSlider');
-    if (!s) return;
-    s.dispatchEvent(new Event('input', {bubbles:true}));
-  }
-  function clearHighlight(){
-    window._hlType = null;
-    // remove tab outlines
-    var tabs = Array.from(document.querySelectorAll('#palletTabs .pallet-tab'));
-    tabs.forEach(function(b){ b.style.outline=''; b.removeAttribute('title'); });
-    forceRedraw();
-  }
-  // Add "Ryd highlight" button next to packing list button
-  function ensureClearBtn(){
-    var tabsEl = document.getElementById('palletTabs');
-    if (!tabsEl) return;
-    var bar = tabsEl.nextElementSibling;
-    if (!bar || !bar.classList.contains('bar')) return;
-    if (document.getElementById('clearHighlightBtn')) return;
-    var btn = document.createElement('button');
-    btn.id = 'clearHighlightBtn';
-    btn.type = 'button';
-    btn.className = 'btn';
-    btn.style.marginLeft = '8px';
-    btn.textContent = 'Ryd highlight';
-    btn.title = 'Vis alle farver igen (ESC eller dobbeltklik i 3D virker også)';
-    btn.addEventListener('click', clearHighlight);
-    bar.appendChild(btn);
-  }
-  // ESC clears highlight
-  document.addEventListener('keydown', function(e){
-    if (e.key === 'Escape'){ clearHighlight(); }
-  });
-  // Double-click in 3D clears highlight
-  var canvas = document.getElementById('view');
-  if (canvas){
-    canvas.addEventListener('dblclick', function(){ clearHighlight(); }, true);
-  }
-  // Double-click on a row in the list clears highlight
-  var boxList = document.getElementById('boxList');
-  if (boxList){
-    boxList.addEventListener('dblclick', function(e){
-      var row = e.target.closest && e.target.closest('.boxrow');
-      if (!row) return;
-      clearHighlight();
-    }, true);
-  }
-  // Click active pallet tab clears highlight (handy shortcut)
-  var tabsRoot = document.getElementById('palletTabs');
-  if (tabsRoot){
-    tabsRoot.addEventListener('click', function(e){
-      var btn = e.target.closest && e.target.closest('.pallet-tab');
-      if (!btn) return;
-      if (btn.classList.contains('active') && window._hlType){ clearHighlight(); }
-    }, true);
-  }
-
-  function init(){ ensureClearBtn(); }
-  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
-})();
+  // End of main application code
 </script>
 
 
@@ -5141,39 +4379,6 @@ window.addEventListener('error', function(e){
     try{ ensureUniqueColors(); if (typeof renderBoxList==='function') renderBoxList(); }catch(_){}
   }
 })();
-
-// Test miljø event listeners
-document.addEventListener('DOMContentLoaded', function() {
-  console.log('🧪 Test miljø initialiseret!');
-  console.log('📋 Tilgængelige funktioner:');
-  console.log('  - testSpecificScenario(scenarioName)');
-  console.log('  - testAllPalletTypes(scenarioName)');
-  console.log('  - testScenarioWithSupportLevels(scenarioName, [30,50,70,90])');
-  console.log('  - runQuickAlgorithmTest() - OPTIMERET FOR HURTIG ANALYSE');
-  console.log('  - runCompleteAlgorithmTest()');
-  console.log('  - TEST_SCENARIOS');
-  
-  // Test at funktionerne er tilgængelige
-  if (typeof window.testSpecificScenario === 'function') {
-    console.log('✅ testSpecificScenario tilgængelig');
-  } else {
-    console.error('❌ testSpecificScenario ikke tilgængelig');
-  }
-  
-  if (typeof window.testAllPalletTypes === 'function') {
-    console.log('✅ testAllPalletTypes tilgængelig');
-  } else {
-    console.error('❌ testAllPalletTypes ikke tilgængelig');
-  }
-  
-  if (typeof window.runQuickAlgorithmTest === 'function') {
-    console.log('✅ runQuickAlgorithmTest tilgængelig - OPTIMERET FOR HURTIG ANALYSE');
-  } else {
-    console.error('❌ runQuickAlgorithmTest ikke tilgængelig');
-  }
-  
-  console.log('💡 Anbefaling: Start med runQuickAlgorithmTest() for hurtig analyse');
-});
 </script>
 
 
