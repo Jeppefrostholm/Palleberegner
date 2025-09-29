@@ -4478,5 +4478,222 @@ window.addEventListener('error', function(e){
 })();
 </script>
 
+
+<script>
+// ====== ADD-ON: Pakkeliste + Reverse Highlight (non-invasive; no changes to original handlers) ======
+(function(){
+  // Globals for add-on
+  window._hlType = window._hlType || null;
+
+  function forceRedraw(){
+    var s = document.getElementById('pitchSlider');
+    if (!s) return;
+    // fire 'input' to trigger original draw()
+    s.dispatchEvent(new Event('input', {bubbles:true}));
+  }
+
+  // Insert "Pakkeliste for denne" button under pallet tabs
+  function ensurePackingListButton(){
+    var tabsEl = document.getElementById('palletTabs');
+    if (!tabsEl) return;
+    if (document.getElementById('packingListBtn')) return;
+    var bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.cssText = 'justify-content:flex-end;margin:6px 0 8px';
+    var btn = document.createElement('button');
+    btn.id = 'packingListBtn';
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.textContent = '📄 Pakkeliste for denne';
+    btn.addEventListener('click', showPackingListForActive);
+    bar.appendChild(btn);
+    tabsEl.insertAdjacentElement('afterend', bar);
+  }
+
+  // Simple modal (independent of original showModal/closeModal)
+  function openModal(html){
+    var root = document.getElementById('addonModalRoot');
+    if (!root){
+      root = document.createElement('div');
+      root.id = 'addonModalRoot';
+      document.body.appendChild(root);
+    }
+    root.innerHTML = '<div class="modal-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;z-index:1000">\
+      <div class="modal" style="background:white;max-width:820px;width:calc(100% - 32px);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.15);padding:16px">\
+        '+ html +'\
+      </div></div>';
+    root.querySelector('.modal-overlay').addEventListener('click', function(e){ if(e.target.classList.contains('modal-overlay')) closeModal(); });
+  }
+  function closeModal(){
+    var root = document.getElementById('addonModalRoot');
+    if (root) root.innerHTML = '';
+  }
+
+  // Build packing list for active pallet
+  function getActivePalletIndex(){
+    var tabs = Array.from(document.querySelectorAll('#palletTabs .pallet-tab'));
+    var ix = tabs.findIndex(function(b){ return b.classList.contains('active'); });
+    if (ix >= 0) return ix;
+    return (window.selectedPallet || 0);
+  }
+  function showPackingListForActive(){
+    var packing = window._packing;
+    var palIdx = getActivePalletIndex();
+    if (!packing || !packing.pallets || !packing.pallets[palIdx]){
+      alert('Ingen pakning at vise endnu. Beregn først.');
+      return;
+    }
+    var pal = packing.pallets[palIdx];
+    var map = new Map();
+    (pal.boxes||[]).forEach(function(b){
+      var key = ( (b.name||b.typeId||'Uden navn') +'|'+ [Math.round(b.length||0),Math.round(b.width||0),Math.round(b.height||0)].join('x') );
+      var cur = map.get(key) || { name:(b.name||b.typeId||'Uden navn'), L:Math.round(b.length||0), B:Math.round(b.width||0), H:Math.round(b.height||0), count:0, weight:0 };
+      cur.count += 1; cur.weight += (b.weight||0);
+      map.set(key, cur);
+    });
+    var rows = Array.from(map.values()).sort(function(a,b){ return a.name.localeCompare(b.name,'da'); });
+    var labelBase = (document.getElementById('palletType') && document.getElementById('palletType').value === 'custom') ? 'Kolli' : 'Palle';
+    var title = labelBase + ' ' + (palIdx+1);
+    var table = rows.length ? ('<table class="mono" style="width:100%;border-collapse:collapse;margin-top:8px">'
+        + '<thead><tr><th style="text-align:left;padding:6px 4px;border-bottom:1px solid var(--border)">Vare</th>'
+        + '<th style="text-align:right;padding:6px 4px;border-bottom:1px solid var(--border)">L×B×H (cm)</th>'
+        + '<th style="text-align:right;padding:6px 4px;border-bottom:1px solid var(--border)">Antal</th>'
+        + '<th style="text-align:right;padding:6px 4px;border-bottom:1px solid var(--border)">Vægt (kg)</th></tr></thead><tbody>'
+        + rows.map(function(r){ return '<tr>\
+            <td style="padding:6px 4px;border-bottom:1px solid var(--border)">'+r.name+'</td>\
+            <td style="padding:6px 4px;text-align:right;border-bottom:1px solid var(--border)">'+r.L+'×'+r.B+'×'+r.H+'</td>\
+            <td style="padding:6px 4px;text-align:right;border-bottom:1px solid var(--border)">'+r.count+'</td>\
+            <td style="padding:6px 4px;text-align:right;border-bottom:1px solid var(--border)">'+r.weight.toFixed(2)+'</td>\
+          </tr>'; }).join('')
+        + '</tbody></table>') : '<div class="info">Ingen bokse i denne.</div>';
+    var html = '<h3>Pakkeliste – '+title+'</h3>'+ table +'<div class="actions" style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">\
+        <button class="btn" id="pl-close" type="button">Luk</button>\
+        '+ (rows.length?'<button class="btn primary" id="pl-export" type="button">Eksportér CSV</button>':'') +'\
+      </div>';
+    openModal(html);
+    var root = document.getElementById('addonModalRoot');
+    root.querySelector('#pl-close').addEventListener('click', closeModal);
+    var exp = root.querySelector('#pl-export');
+    if (exp){
+      exp.addEventListener('click', function(){
+        var csv = ['Vare;L;B;H;Antal;Vægt_kg'].concat(rows.map(function(r){ return [r.name,r.L,r.B,r.H,r.count,r.weight.toFixed(2)].join(';'); })).join('\n');
+        var blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+        var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pakkeliste_'+labelBase.toLowerCase()+'_'+(palIdx+1)+'.csv'; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },0);
+      });
+    }
+  }
+
+  // Reverse highlight from box type list -> 3D
+  function enableReverseHighlight(){
+    var boxList = document.getElementById('boxList');
+    if (!boxList) return;
+    boxList.addEventListener('click', function(e){
+      var row = e.target.closest && e.target.closest('.boxrow');
+      if (!row) return;
+      // ignore when clicking controls
+      if (e.target.closest('button') || (e.target.tagName==='INPUT' && e.target.type!=='text') || e.target.closest('label')) return;
+      var nameInput = row.querySelector('input[data-k="name"]');
+      var name = (nameInput && nameInput.value || '').trim();
+      if (!name) return;
+
+      window._hlType = name;
+
+      // jump to first pallet that has this type if current active doesn't
+      try{
+        var tabs = Array.from(document.querySelectorAll('#palletTabs .pallet-tab'));
+        var activeIdx = tabs.findIndex(function(b){ return b.classList.contains('active'); });
+        var hasHere = !!((window._packing && window._packing.pallets && window._packing.pallets[activeIdx] && window._packing.pallets[activeIdx].boxes || []).some(function(b){ return (b.name||'').trim()===name; }));
+        if (!hasHere){
+          var targetIdx = (window._packing && window._packing.pallets || []).findIndex(function(p){ return (p.boxes||[]).some(function(b){ return (b.name||'').trim()===name; }); });
+          if (targetIdx>=0 && tabs[targetIdx]) tabs[targetIdx].click();
+        }
+        // outline tabs that contain the type
+        tabs.forEach(function(b, i){
+          var has = !!((window._packing && window._packing.pallets && window._packing.pallets[i] && window._packing.pallets[i].boxes || []).some(function(bb){ return (bb.name||'').trim()===name; }));
+          b.style.outline = has ? '2px solid var(--accent)' : '';
+          if (has) b.title = 'Indeholder den valgte kassetype';
+        });
+      }catch(_){}
+      forceRedraw();
+    }, true);
+  }
+
+  // Init after DOM is ready
+  function init(){
+    ensurePackingListButton();
+    enableReverseHighlight();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
+
+<script>
+// ====== ADD-ON v2: Clear highlight (Ryd farver) ======
+(function(){
+  function forceRedraw(){
+    var s = document.getElementById('pitchSlider');
+    if (!s) return;
+    s.dispatchEvent(new Event('input', {bubbles:true}));
+  }
+  function clearHighlight(){
+    window._hlType = null;
+    // remove tab outlines
+    var tabs = Array.from(document.querySelectorAll('#palletTabs .pallet-tab'));
+    tabs.forEach(function(b){ b.style.outline=''; b.removeAttribute('title'); });
+    forceRedraw();
+  }
+  // Add "Ryd highlight" button next to packing list button
+  function ensureClearBtn(){
+    var tabsEl = document.getElementById('palletTabs');
+    if (!tabsEl) return;
+    var bar = tabsEl.nextElementSibling;
+    if (!bar || !bar.classList.contains('bar')) return;
+    if (document.getElementById('clearHighlightBtn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'clearHighlightBtn';
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.style.marginLeft = '8px';
+    btn.textContent = 'Ryd highlight';
+    btn.title = 'Vis alle farver igen (ESC eller dobbeltklik i 3D virker også)';
+    btn.addEventListener('click', clearHighlight);
+    bar.appendChild(btn);
+  }
+  // ESC clears highlight
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape'){ clearHighlight(); }
+  });
+  // Double-click in 3D clears highlight
+  var canvas = document.getElementById('view');
+  if (canvas){
+    canvas.addEventListener('dblclick', function(){ clearHighlight(); }, true);
+  }
+  // Double-click on a row in the list clears highlight
+  var boxList = document.getElementById('boxList');
+  if (boxList){
+    boxList.addEventListener('dblclick', function(e){
+      var row = e.target.closest && e.target.closest('.boxrow');
+      if (!row) return;
+      clearHighlight();
+    }, true);
+  }
+  // Click active pallet tab clears highlight (handy shortcut)
+  var tabsRoot = document.getElementById('palletTabs');
+  if (tabsRoot){
+    tabsRoot.addEventListener('click', function(e){
+      var btn = e.target.closest && e.target.closest('.pallet-tab');
+      if (!btn) return;
+      if (btn.classList.contains('active') && window._hlType){ clearHighlight(); }
+    }, true);
+  }
+
+  function init(){ ensureClearBtn(); }
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
 </body>
 </html>
