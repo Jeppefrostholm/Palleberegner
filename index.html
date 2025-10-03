@@ -416,7 +416,7 @@ function num(x){
       if (bt.weight===0 && bt.count>0) errs.push(`Række ${rowIdx}: Vægt er 0 – de kasser ignoreres i beregningen.`);
       if (bt.L>0 && bt.B>0 && bt.H>0 && bt.count>0){
         const tb = { length: bt.L, width: bt.B, height: bt.H, flatOnly: !!bt.flatOnly };
-const canFit = orientationsFor(tb).some(ob => ob.l <= Lp + EPS && ob.w <= Bp + EPS && ob.h <= Hp + EPS);
+const canFit = orientationsFor(tb, Lp, Bp).some(ob => ob.l <= Lp + EPS && ob.w <= Bp + EPS && ob.h <= Hp + EPS);
 if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan ikke være inden for ${Lp}×${Bp}×${Hp} i nogen rotation.`);
 }
     });
@@ -502,7 +502,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
 
             // 4) Ellers: prioriter for kompakthed - højde først, derefter baseareal
             const ha = (a.height||a.h||0), hb = (b.height||b.h||0);
-            if (hb !== ha) return hb - ha; // Højere kasser først for at minimere peak
+            if (hb !== ha) return ha - hb; // Højere kasser først for at minimere peak
             
             const ba = (a.length||a.l||0) * (a.width||a.w||0);
             const bb = (b.length||b.l||0) * (b.width||b.w||0);
@@ -514,18 +514,26 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
         
   const isDivisible = (a,b) => { if (b<=EPS) return false; const r=a%b; return r<=EPS || (b-r)<=EPS; };
 
-  function orientationsFor(t) {
+  function orientationsFor(t, palletLength, palletWidth) {
+    // Standardværdier hvis pallet ikke er angivet
+    const palL = palletLength || 120;
+    const palW = palletWidth || 80;
+    
+    // Brug de optimerede orienteringer hvis de er sat
+    if (t.useL && t.useW && t.useH) {
+      return [{ l: t.useL, w: t.useW, h: t.useH }];
+    }
+    
     if (t.flatOnly) {
       const arr = [
         { l:t.length, w:t.width,  h:t.height },
         { l:t.width,  w:t.length, h:t.height },
       ];
-      // sort: lowest height first, then largest base area, then best fit for pallet
+      // sort: lowest height first, then best pallet fit (maximize boxes per layer)
       return arr.sort((a,b)=> {
         if (Math.abs(a.h - b.h) > EPS) return a.h - b.h; // Lavest højde først
         const areaA = a.l * a.w, areaB = b.l * b.w;
         if (Math.abs(areaB - areaA) > EPS) return areaB - areaA; // Største base først
-        // Hvis samme højde og base, vælg den der passer bedst på pallen
         return 0;
       });
     }
@@ -537,32 +545,26 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       { l:t.height, w:t.length, h:t.width  },
       { l:t.height, w:t.width,  h:t.length },
     ];
-    // Forbedret sortering: lavest højde, stÃ¸rste base, bedste pallet-fit
+    // Forbedret sortering: prioriter orienteringer der giver flest kasser pr lag
     return arr.sort((a,b)=> {
-      if (Math.abs(a.h - b.h) > EPS) return a.h - b.h; // Lavest højde først
+      // 1. Prioriter orienteringer der kan placeres flest gange på pallen
+      const countA = Math.floor(palL / a.l) * Math.floor(palW / a.w);
+      const countB = Math.floor(palL / b.l) * Math.floor(palW / b.w);
+      if (countB !== countA) return countB - countA; // Flest kasser pr lag først
+      
+      // 2. Lavest højde først
+      if (Math.abs(a.h - b.h) > EPS) return a.h - b.h;
+      
+      // 3. Største base først
       const areaA = a.l * a.w, areaB = b.l * b.w;
-      if (Math.abs(areaB - areaA) > EPS) return areaB - areaA; // StÃ¸rste base først
-      // Hvis samme højde og base, prioriter den der giver bedst tetris-fit
+      if (Math.abs(areaB - areaA) > EPS) return areaB - areaA;
+      
       return 0;
     });
   }
 
-// --- cache wrapper for orientationsFor (non-invasive) ---
-(function(){
-  const __orientationCache = new Map();
-  const __orig_orientationsFor = orientationsFor;
-  orientationsFor = function(t){
-    try{
-      const key = `${t.length}x${t.width}x${t.height}|${t.flatOnly?'F':'A'}`;
-      if (__orientationCache.has(key)) return __orientationCache.get(key);
-      const res = __orig_orientationsFor(t);
-      __orientationCache.set(key, res);
-      return res;
-    }catch(e){
-      return __orig_orientationsFor(t);
-    }
-  };
-})();
+// --- cache wrapper for orientationsFor (DISABLED - causes issues with pallet-specific sorting) ---
+// Cache disabled to ensure correct pallet-specific orientation selection
 
 
   function planFirstFullLayer(pallet, boxTypesInput, remainingById, weightLeft){
@@ -570,7 +572,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
     for(const t of boxTypesInput){
       const left=remainingById[t.id];
       if(!(left===Infinity || left>0)) continue;
-      for(const o of orientationsFor(t)){
+      for(const o of orientationsFor(t, pallet.length, pallet.width)){
         if(o.h > pallet.maxHeight + EPS) continue;
         if(o.l>pallet.length+EPS || o.w>pallet.width+EPS) continue;
         const nx=Math.floor(pallet.length/o.l);
@@ -627,7 +629,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
         let left = remainingById[t.id];
         if (!(left === Infinity || left > 0)) continue;
 
-        for (const o of orientationsFor(t)) {
+        for (const o of orientationsFor(t, pallet.length, pallet.width)) {
           if (o.l > pallet.length + EPS || o.w > pallet.width + EPS) continue;
           if (o.h > pallet.maxHeight + EPS) continue;
 
@@ -770,6 +772,23 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       
       const boxTypesInput = validBoxTypes.sort((a,b)=> (b.length*b.width*b.height) - (a.length*a.width*a.height));
 
+      // Vælg bedste rotation for hver type + auto-bund
+      for (const t of boxTypesInput) {
+        if (!t.locked) { // respekter Låst → behold eksisterende orientation
+          const ori = bestOrientationForType(t, palSpec.length, palSpec.width);
+          if (ori && ori.L && ori.W && ori.H) {
+            t.useL = ori.L; t.useW = ori.W; t.useH = ori.H;
+          } else {
+            // Fallback til originale dimensioner hvis ingen gyldig rotation
+            t.useL = t.l; t.useW = t.w; t.useH = t.h;
+          }
+        } else {
+          t.useL = t.l; t.useW = t.w; t.useH = t.h;
+        }
+      }
+      autoBottomGeometry(boxTypesInput, palSpec.length, palSpec.width);
+      boxTypesInput.sort(sortTypesGeometry);
+
       const remainingById = {};
       const hasGroundPlacement = {};
       for (const t of boxTypesInput){
@@ -795,6 +814,130 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       }
 
     const stillBoxesLeft = () => boxTypesInput.some(t => remainingById[t.id]===Infinity || remainingById[t.id]>0);
+
+    // ===== GEOMETRY-ONLY HELPERS =====
+    const EPS = 1e-6;
+    const SUPPORT_REQUIRED = 0.50;      // min. støtte under en kasse (reduceret fra 0.90)
+    const LAYER_FILL_THRESHOLD = 0.80;  // udfyld nederste åbne lag før vi går højere (reduceret fra 0.95)
+
+    // Kræv støtte hvis ikke på pallen
+    function supportDemand(zTop) {
+      return zTop <= EPS ? 0 : SUPPORT_REQUIRED;
+    }
+
+    // Andel af kandidatens footprint der er støttet i 'top'-planet (H er din højdegrid)
+    function supportRatioAtTop(ix, iy, w, l, top, H) {
+      let supported = 0, total = w * l;
+      for (let x = ix; x < ix + w; x++) {
+        for (let y = iy; y < iy + l; y++) {
+          if (H[x][y] >= top - EPS) supported++;
+        }
+      }
+      return total ? supported / total : 1;
+    }
+
+    // Scor rotationer: lav højde, stor base, god delbarhed mod palle
+    function scoreOrientation(L, W, H, PL, PW) {
+      const base = L * W;
+      const heightPenalty = H;
+      const tiles = Math.floor(PL / L) * Math.floor(PW / W);
+      const fitWasteL = L ? Math.min(PL % L, L - (PL % L)) / L : 0;
+      const fitWasteW = W ? Math.min(PW % W, W - (PW % W)) / W : 0;
+      return base * 0.02 + tiles * 0.3 - heightPenalty * 2.0 - (fitWasteL + fitWasteW) * 3.0;
+    }
+
+    function bestOrientationForType(t, PL, PW) {
+      const rots = [
+        { L: t.l, W: t.w, H: t.h },
+        { L: t.l, W: t.h, H: t.w },
+        { L: t.w, W: t.h, H: t.l },
+        { L: t.w, W: t.l, H: t.h },
+        { L: t.h, W: t.l, H: t.w },
+        { L: t.h, W: t.w, H: t.l },
+      ].filter(r => r.L && r.W && r.H);
+      
+      if (rots.length === 0) {
+        // Fallback til originale dimensioner hvis ingen gyldige rotationer
+        return { L: t.l, W: t.w, H: t.h };
+      }
+      
+      let best = rots[0], bestScore = -Infinity;
+      for (const r of rots) {
+        const s = scoreOrientation(r.L, r.W, r.H, PL, PW);
+        if (s > bestScore) { bestScore = s; best = r; }
+      }
+      return best;
+    }
+
+    // Geometri-baseret auto-bund (respekterer manuelt sat bottomRequired)
+    function autoBottomGeometry(boxTypes, PL, PW) {
+      for (const t of boxTypes) {
+        if (typeof t.bottomRequired === 'boolean') continue; // brugerens valg vinder
+        
+        // Sikr at vi har gyldige dimensioner
+        const L = t.useL ?? t.l ?? t.length ?? 1;
+        const W = t.useW ?? t.w ?? t.width ?? 1;
+        const H = t.useH ?? t.h ?? t.height ?? 1;
+        
+        if (L <= 0 || W <= 0 || H <= 0) continue; // Skip hvis ugyldige dimensioner
+        
+        const base = L * W;
+        const flatness = Math.max(L, W) / Math.max(1, H);
+        const tiles = Math.floor(PL / L) * Math.floor(PW / W);
+        const edgeFit = ((PL % L) / L) + ((PW % W) / W);
+        const many = Math.min((t.count ?? 999), 8);
+
+        const score =
+          base * 0.015 +
+          flatness * 1.3 +
+          tiles * 0.4 -
+          edgeFit * 1.0 +
+          many * 0.25;
+
+        t.bottomRequired = score >= 5; // tweakbar tærskel (reduceret fra 10)
+      }
+    }
+
+    // Sortér typer: låst først (respekt), så i-bund, så lav H, så stor base
+    function sortTypesGeometry(a, b) {
+      const alock = !!a.locked, block = !!b.locked;
+      if (alock !== block) return alock ? -1 : 1;
+      const abot = !!a.bottomRequired, bbot = !!b.bottomRequired;
+      if (abot !== bbot) return abot ? -1 : 1;
+      
+      // Sikr at vi har gyldige dimensioner
+      const ah = a.useH ?? a.h ?? a.height ?? 1;
+      const bh = b.useH ?? b.h ?? b.height ?? 1;
+      if (ah !== bh) return ah - bh;
+      
+      const abase = (a.useL ?? a.l ?? a.length ?? 1) * (a.useW ?? a.w ?? a.width ?? 1);
+      const bbase = (b.useL ?? b.l ?? b.length ?? 1) * (b.useW ?? b.w ?? b.width ?? 1);
+      return bbase - abase;
+    }
+
+    // Grouping: hold samme type sammen + lodret stabling
+    function isAdjacentToSameType(ix, iy, w, l, typeId, gridTypeAtCell) {
+      // Check if gridTypeAtCell is null or undefined
+      if (!gridTypeAtCell) return false;
+      
+      // gridTypeAtCell[x][y] skal være den type, der ligger lige under/ved siden af i samme lag (hvis du har den)
+      // Simpel edge-check: find nabo-celler og se om nogen har samme typeId
+      for (let x = ix; x < ix + w; x++) {
+        if (gridTypeAtCell[x]?.[iy - 1] === typeId) return true;
+        if (gridTypeAtCell[x]?.[iy + l] === typeId) return true;
+      }
+      for (let y = iy; y < iy + l; y++) {
+        if (gridTypeAtCell[ix - 1]?.[y] === typeId) return true;
+        if (gridTypeAtCell[ix + w]?.[y] === typeId) return true;
+      }
+      return false;
+    }
+
+    function isStackingSameFootprint(ix, iy, w, l, top, typeId, footprintAtTop) {
+      // footprintAtTop kan være en map fra (x,y,top) → {typeId,w,l} hvis du har den;
+      // alternativt tjek at alle celler lige under 'top' har samme typeId og samme "plade".
+      return !!(footprintAtTop && footprintAtTop(ix, iy, w, l, top, typeId));
+    }
 
     // Performance optimeringer
     const startTime = Date.now();
@@ -832,13 +975,49 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
     const overlapsLock = (ix,iy,w,l, L) => !(ix + w <= L.ix || L.ix + L.w <= ix || iy + l <= L.iy || L.iy + L.l <= iy);
      // højde pr. celle
     // === Dynamic helpers (scoped to this run) ===
-    const supportDemand = (weight, zTop) => {
-      // Always return 0 to disable support requirements
-      return 0;
-    };
 
         const sortBoxTypesForThisStep = () => {
       try {
+        // Beregn hvor godt hver kasse-type fylder pallen
+        const calcLayerEfficiency = (boxType) => {
+          const orientations = orientationsFor(boxType, palSpec.length, palSpec.width);
+          let bestCount = 0;
+          let bestCoverage = 0;
+          
+          for (const o of orientations) {
+            if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
+            if (o.h > palSpec.maxHeight + EPS) continue;
+            
+            const nx = Math.floor(palSpec.length / o.l);
+            const ny = Math.floor(palSpec.width / o.w);
+            const count = nx * ny;
+            const coverage = (o.l * nx * o.w * ny) / (palSpec.length * palSpec.width);
+            
+            if (count > bestCount || (count === bestCount && coverage > bestCoverage)) {
+              bestCount = count;
+              bestCoverage = coverage;
+            }
+          }
+          
+          return { count: bestCount, coverage: bestCoverage };
+        };
+        
+        // Beregn total antal kasser tilbage af samme størrelse (LxBxH)
+        const getTotalRemainingOfSameSize = (boxType) => {
+          let total = 0;
+          const targetDims = `${boxType.length}x${boxType.width}x${boxType.height}`;
+          
+          for (const bt of boxTypesInput) {
+            const btDims = `${bt.length}x${bt.width}x${bt.height}`;
+            if (btDims === targetDims) {
+              const remaining = remainingById[bt.id];
+              if (remaining === Infinity) return Infinity;
+              total += remaining || 0;
+            }
+          }
+          return total;
+        };
+        
         return [...boxTypesInput].sort((a,b)=>{
           // Valider input
           if (!a || !b) return 0;
@@ -848,34 +1027,73 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
           const rb = (remainingById[b.id]===Infinity || remainingById[b.id]>0) ? 0 : 1;
           if (ra!==rb) return ra - rb;
 
-          // 2) Prioriter 'I bund' (bottomRequired) moderat - ikke tving dem til at blive først
+          // 2) AUTOMATISK PRIORITERING: Store kasser i bunden først
+          // Beregn "grundstørrelse" - baseareal * højde for at prioritere store, stabile kasser
+          const baseAreaA = (a.length||a.l||0) * (a.width||a.w||0);
+          const baseAreaB = (b.length||b.l||0) * (b.width||b.w||0);
+          const heightA = (a.height||a.h||0);
+          const heightB = (b.height||b.h||0);
+          const foundationScoreA = baseAreaA * heightA; // Større base + højere = bedre fundament
+          const foundationScoreB = baseAreaB * heightB;
+          
+          // MEGET STÆRK prioritering af store kasser som fundament
+          if (Math.abs(foundationScoreB - foundationScoreA) > 1000) {
+            return foundationScoreB - foundationScoreA;
+          }
+
+          // 3) KRITISK: Prioriter kasser hvor der er MANGE af samme størrelse tilbage
+          // Dette sikrer at alle 60x40x37 kasser (både orange og lilla) pakkes sammen
+          const totalA = getTotalRemainingOfSameSize(a);
+          const totalB = getTotalRemainingOfSameSize(b);
+          
+          // MEGET STÆRK prioritering af kasser med mange af samme størrelse
+          // Hvis forskellen er stor (>2 kasser), prioritér det HØJT
+          const diff = Math.abs(totalB - totalA);
+          if (diff > 2) {
+            if (totalA === Infinity) return -1;
+            if (totalB === Infinity) return 1;
+            return (totalB - totalA) * 50; // Reduceret fra 100 til 50 for at give plads til foundation score
+          }
+          
+          if (totalB !== totalA) {
+            if (totalA === Infinity) return -1;
+            if (totalB === Infinity) return 1;
+            return totalB - totalA; // Flest kasser af samme størrelse først
+          }
+
+          // 4) Prioriter 'I bund' (bottomRequired) højt - disse skal absolut i bunden
           const aBottom = a && typeof a.bottomRequired === 'boolean' && a.bottomRequired === true;
           const bBottom = b && typeof b.bottomRequired === 'boolean' && b.bottomRequired === true;
           if (aBottom !== bBottom) {
-            // Reducer prioritering af "I bund" - lad dem konkurrere med andre kasser
-            return aBottom ? -0.5 : 0.5;
+            return aBottom ? -2 : 2; // Øget fra 0.5 til 2 for stærkere prioritering
           }
 
-          // 3) For 'I bund'-typer: stÃ¸rre baseareal først (stabil base)
-          if (aBottom && bBottom) {
-            const ba = (a.length||a.l||0) * (a.width||a.w||0);
-            const bb = (b.length||b.l||0) * (b.width||b.w||0);
-            if (ba !== bb) return bb - ba;
-          }
-
-          // 4) Prioriter kompakthed: lav højde først, derefter volumen
-          const ha = (a.height||a.h||0), hb = (b.height||b.h||0);
-          if (hb !== ha) return ha - hb; // Lav højde først for bedre kompakthed
+          // 5) Prioriter kasser der fylder laget BEDST (flest kasser pr lag, højest dækningsgrad)
+          const effA = calcLayerEfficiency(a);
+          const effB = calcLayerEfficiency(b);
           
+          // Først: Flest kasser pr lag
+          if (effB.count !== effA.count) return effB.count - effA.count;
+          
+          // Derefter: Bedste dækningsgrad
+          if (Math.abs(effB.coverage - effA.coverage) > 0.01) return effB.coverage - effA.coverage;
+
+          // 6) Større baseareal først (stabil base)
+          if (baseAreaB !== baseAreaA) return baseAreaB - baseAreaA;
+
+          // 7) Lav højde først for bedre kompakthed (kun hvis baseareal er ens)
+          if (Math.abs(heightB - heightA) > 1) return heightA - heightB;
+          
+          // 8) Større volumen som tiebreaker
           const va = (a.length||a.l||0) * (a.width||a.w||0) * (a.height||a.h||0);
           const vb = (b.length||b.l||0) * (b.width||b.w||0) * (b.height||b.h||0);
-          if (vb !== va) return vb - va;
+          if (Math.abs(vb - va) > 100) return vb - va;
           
           return (b.weight||0) - (a.weight||0);
         });
       } catch (error) {
         console.error('Error in sortBoxTypesForThisStep:', error);
-        return [...boxTypesInput]; // Returner uÃ¦ndret ved fejl
+        return [...boxTypesInput]; // Returner uændret ved fejl
       }
     };
 
@@ -883,8 +1101,13 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
       const areaSumUnder = (ix,iy,w,l) => { let s=0; for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) s+=H[x][y]; return s; };
       const maxUnder     = (ix,iy,w,l) => { let m=0; for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++) if (H[x][y]>m) m=H[x][y]; return m; };
       const supportRatioAtTop = (ix,iy,w,l,top) => {
-      // Always return 1 (100% support) to disable support requirements
-      return 1;
+      let supported = 0, total = w * l;
+      for (let x = ix; x < ix + w; x++) {
+        for (let y = iy; y < iy + l; y++) {
+          if (H[x][y] >= top - EPS) supported++;
+        }
+      }
+      return total ? supported / total : 1;
     };
       // Average height on 1-cell border around a candidate footprint
       const borderAvgAround = (ix,iy,w,l) => {
@@ -983,134 +1206,10 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
         }
       };
 
-      // (1) Forbedret bund-pass - prioriterer "I bund" kasser i bunden
+      // (1) Brug kun bottomPass - ingen særlig fase
       {
         const ref = { value: weightLeft };
         
-        // FÃ¸rst: placer alle "I bund" kasser i bunden (z=0)
-        // Debug: log alle box types og deres bottomRequired status
-        console.log('Box types input:', boxTypesInput);
-        console.log('Box types with bottomRequired:', boxTypesInput.filter(t => t && t.bottomRequired));
-        
-        // Sorter dem efter stÃ¸rrelse (stÃ¸rste først) for bedre stabilitet
-        const bottomRequiredTypes = boxTypesInput
-          .filter(t => {
-            // Bedre validering af bottomRequired property
-            if (!t) return false;
-            if (typeof t.bottomRequired !== 'boolean') {
-              console.warn('Box type has invalid bottomRequired property:', t);
-              return false;
-            }
-            return t.bottomRequired === true;
-          })
-          .sort((a, b) => {
-            try {
-              const areaA = (a.length||a.l||0) * (a.width||a.w||0);
-              const areaB = (b.length||b.l||0) * (b.width||b.w||0);
-              return areaB - areaA; // Største først
-            } catch (error) {
-              console.error('Error sorting bottomRequired types:', error);
-              return 0;
-            }
-          });
-        
-        console.log('Filtered bottomRequired types:', bottomRequiredTypes);
-        
-        for (const t of bottomRequiredTypes) {
-          try {
-            let left = remainingById[t.id];
-            if (!(left === Infinity || left > 0)) continue;
-            
-            for (const o of orientationsFor(t)) {
-              if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
-              if (o.h > palSpec.maxHeight + EPS) continue;
-              
-              const w = Math.round(o.l / G), l = Math.round(o.w / G);
-              let placed = false;
-              
-              // FIXED: Find bedste bund-placering (kun i bunden, ikke stakning)
-              let bestPlacement = null;
-              for (let iy = 0; iy <= Ny - l; iy++) {
-                for (let ix = 0; ix <= Nx - w; ix++) {
-                  // Tjek om området er ledigt i bunden (z=0)
-                  let canPlace = true;
-                  for (let x = ix; x < ix + w; x++) {
-                    for (let y = iy; y < iy + l; y++) {
-                      if (H[x][y] > EPS) {
-                        canPlace = false;
-                        break;
-                      }
-                    }
-                    if (!canPlace) break;
-                  }
-                  
-                  if (canPlace) {
-                    // Beregn hvor godt denne placering er (minimere hul)
-                    let holeScore = 0;
-                    for (let x = Math.max(0, ix-1); x <= Math.min(Nx-1, ix+w); x++) {
-                      for (let y = Math.max(0, iy-1); y <= Math.min(Ny-1, iy+l); y++) {
-                        if (x < ix || x >= ix+w || y < iy || y >= iy+l) {
-                          if (H[x][y] > 0) holeScore += H[x][y];
-                        }
-                      }
-                    }
-                    
-                    if (!bestPlacement || holeScore < bestPlacement.holeScore) {
-                      bestPlacement = { ix, iy, holeScore };
-                    }
-                  }
-                }
-              }
-              
-              if (bestPlacement && t.weight <= weightLeft + EPS) {
-                // Placer kassen på den korrekte højde
-                raiseRectTo(bestPlacement.ix, bestPlacement.iy, w, l, o.h);
-                
-                // FIXED: Placer "I bund" kasse kun i bunden (z=0)
-                const newBox = {
-                  x: bestPlacement.ix*G, 
-                  y: bestPlacement.iy*G, 
-                  z: 0, // FIXED: Altid z=0 for "I bund" kasser
-                  length: o.l, 
-                  width: o.w, 
-                  height: o.h,
-                  typeId: t.id, 
-                  color: t.color || '#4F81BD', 
-                  name: t.name || t.id, 
-                  weight: t.weight || 0
-                };
-                
-                // Tjek om alle nødvendige felter er gyldige
-                if (typeof newBox.x === 'number' && typeof newBox.y === 'number' && 
-                    typeof newBox.length === 'number' && typeof newBox.width === 'number' && 
-                    typeof newBox.height === 'number') {
-                  pal.boxes.push(newBox);
-                } else {
-                  console.error('Invalid box object:', newBox);
-                  continue;
-                }
-                
-                bottomColumnLocks.push({ 
-                  ix: bestPlacement.ix, iy: bestPlacement.iy, 
-                  w, l, typeId: t.id 
-                });
-                hasGroundPlacement[t.id] = true;
-                weightLeft -= t.weight;
-                if (left !== Infinity) {
-                  left--;
-                  remainingById[t.id] = left;
-                }
-                placed = true;
-                break; // orientation loop
-              }
-            }
-          } catch (error) {
-            console.error('Error placing bottomRequired box:', t, error);
-            continue; // Skip denne kasse hvis der er fejl
-          }
-        }
-        
-        // Derefter: kald den oprindelige bottomPass for resten
         const didBottom = bottomPass({
           pallet: palSpec, boxTypesInput, remainingById,
           G, Nx, Ny, H, raiseRectTo, pal, weightLeftRef: ref, hasGroundPlacement, bottomColumnLocks
@@ -1145,18 +1244,244 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
         }
       }
 
-      // (2) Greedy tetris – minimer peak-højde først
+      // === Helper: Beregn hvor meget af det laveste lag der er fyldt ===
+      const calcLayerFillRatio = (targetTop) => {
+        let filledCells = 0;
+        let totalCells = Nx * Ny;
+        for (let x=0; x<Nx; x++) {
+          for (let y=0; y<Ny; y++) {
+            if (H[x][y] >= targetTop - EPS) filledCells++;
+          }
+        }
+        return filledCells / totalCells;
+      };
+
+      // Fyld det aktuelle laveste lag så kompakt som muligt (kun denne højde)
+      function fillCurrentLayerGreedy(minTop){
+        let placedAny = false;
+        const tryPlaceLoop = () => {
+          // Fokuser på størrelsesgrupper med flest enheder først
+          const sizeCountsLocal = new Map();
+          for (const t of boxTypesInput){
+            const rem = remainingById[t.id];
+            if (!(rem===Infinity || rem>0)) continue;
+            const key = `${t.length}×${t.width}×${t.height}`;
+            sizeCountsLocal.set(key, (sizeCountsLocal.get(key)||0) + (rem===Infinity?1000:rem));
+          }
+          const types = [...boxTypesInput].filter(t=>{
+            const left = remainingById[t.id];
+            return (left===Infinity || left>0) && (t.weight||0) <= weightLeft + EPS;
+          }).sort((a,b)=>{
+            // 1. Prioriter store kasser (større baseareal) først
+            const areaA = a.length*a.width, areaB = b.length*b.width;
+            if (Math.abs(areaB - areaA) > 500) return areaB - areaA; // Store forskelle i baseareal
+            
+            // 2. Prioriter kasser med mange tilbage af samme størrelse
+            const ca = sizeCountsLocal.get(`${a.length}×${a.width}×${a.height}`)||0;
+            const cb = sizeCountsLocal.get(`${b.length}×${b.width}×${b.height}`)||0;
+            if (cb!==ca) return cb-ca; // flest tilbage af samme størrelse først
+            
+            // 3. Prioriter højere kasser (bedre fundament)
+            const heightA = a.height, heightB = b.height;
+            if (Math.abs(heightB - heightA) > 5) return heightB - heightA;
+            
+            // 4. Større base først som tiebreaker
+            if (areaB!==areaA) return areaB-areaA;
+            
+            return (b.weight||0)-(a.weight||0);
+          });
+          // Først: forsøg at placere PAR (2 stk) side-om-side af samme store type for at undgå "luft" i midten
+          for (const t of types){
+            const left = remainingById[t.id];
+            if (!(left===Infinity || left>1)) continue; // kræver mindst 2
+            if ((t.weight||0) * 2 > weightLeft + EPS) continue;
+            const oris = orientationsFor(t, palSpec.length, palSpec.width).slice().sort((oa,ob)=>{
+              if (Math.abs(oa.h - ob.h) > EPS) return oa.h - ob.h; // lavest højde først
+              const areaA = oa.l*oa.w, areaB = ob.l*ob.w;
+              if (areaB!==areaA) return areaB-areaA; // større base først
+              return 0;
+            });
+            for (const o of oris){
+              const w = Math.round(o.l / G), l = Math.round(o.w / G), h = o.h;
+              // kun hvis der kan stå mindst 2 i en række eller kolonne
+              if (w*2 > Nx && l*2 > Ny) continue;
+              // Scan grid for to nabo-placeringer på minTop
+              // vandret
+              for (let iy=0; iy<=Ny-l; iy++){
+                for (let ix=0; ix<=Nx - 2*w; ix++){
+                  let ok=true; // begge rektangler på minTop
+                  for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++){ if (Math.abs(H[x][y]-minTop)>EPS){ ok=false; break; } }
+                  if (!ok) continue;
+                  for (let x=ix+w; x<ix+2*w; x++) for (let y=iy; y<iy+l; y++){ if (Math.abs(H[x][y]-minTop)>EPS){ ok=false; break; } }
+                  if (!ok) continue;
+                  if (minTop + h > palSpec.maxHeight + EPS) continue;
+                  // placer to stk vandret
+                  raiseRectTo(ix,iy,w,l,minTop + h);
+                  pal.boxes.push({x:ix*G,y:iy*G,z:minTop,length:o.l,width:o.w,height:o.h,typeId:t.id,color:t.color,name:t.name||t.id, weight:t.weight});
+                  raiseRectTo(ix+w,iy,w,l,minTop + h);
+                  pal.boxes.push({x:(ix+w)*G,y:iy*G,z:minTop,length:o.l,width:o.w,height:o.h,typeId:t.id,color:t.color,name:t.name||t.id, weight:t.weight});
+                  weightLeft -= 2*(t.weight||0);
+                  if (remainingById[t.id] !== Infinity) remainingById[t.id] = Math.max(0,(remainingById[t.id]||0)-2);
+                  placedAny = true;
+                  return true;
+                }
+              }
+              // lodret
+              for (let ix=0; ix<=Nx-w; ix++){
+                for (let iy=0; iy<=Ny - 2*l; iy++){
+                  let ok=true;
+                  for (let x=ix; x<ix+w; x++) for (let y=iy; y<iy+l; y++){ if (Math.abs(H[x][y]-minTop)>EPS){ ok=false; break; } }
+                  if (!ok) continue;
+                  for (let x=ix; x<ix+w; x++) for (let y=iy+l; y<iy+2*l; y++){ if (Math.abs(H[x][y]-minTop)>EPS){ ok=false; break; } }
+                  if (!ok) continue;
+                  if (minTop + h > palSpec.maxHeight + EPS) continue;
+                  // placer to stk lodret
+                  raiseRectTo(ix,iy,w,l,minTop + h);
+                  pal.boxes.push({x:ix*G,y:iy*G,z:minTop,length:o.l,width:o.w,height:o.h,typeId:t.id,color:t.color,name:t.name||t.id, weight:t.weight});
+                  raiseRectTo(ix,iy+l,w,l,minTop + h);
+                  pal.boxes.push({x:ix*G,y:(iy+l)*G,z:minTop,length:o.l,width:o.w,height:o.h,typeId:t.id,color:t.color,name:t.name||t.id, weight:t.weight});
+                  weightLeft -= 2*(t.weight||0);
+                  if (remainingById[t.id] !== Infinity) remainingById[t.id] = Math.max(0,(remainingById[t.id]||0)-2);
+                  placedAny = true;
+                  return true;
+                }
+              }
+            }
+          }
+
+          // Dernæst: normal en-ad-gangen placering
+          for (const t of types){
+            const left = remainingById[t.id];
+            if (!(left===Infinity || left>0)) continue;
+            if ((t.weight||0) > weightLeft + EPS) continue;
+            // Vælg orienteringer der flugter bedst med pallen først (heltalsfliser)
+            const oris = orientationsFor(t, palSpec.length, palSpec.width).slice().sort((oa,ob)=>{
+              if (Math.abs(oa.h - ob.h) > EPS) return oa.h - ob.h;
+              const areaA = oa.l*oa.w, areaB = ob.l*ob.w;
+              if (areaB!==areaA) return areaB-areaA;
+              return 0;
+            });
+            for (const o of oris){
+              if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
+              const w = Math.round(o.l / G), l = Math.round(o.w / G), h = o.h;
+              for (let ix=0; ix<=Nx - w; ix++){
+                for (let iy=0; iy<=Ny - l; iy++){
+                  const top = maxUnder(ix,iy,w,l);
+                  if (Math.abs(top - minTop) > EPS) continue; // kun laveste lag
+                  if (top + h > palSpec.maxHeight + EPS) continue;
+                  if ((t.weight||0) > weightLeft + EPS) continue;
+                  // placer
+                  raiseRectTo(ix,iy,w,l, top + h);
+                  pal.boxes.push({ x: ix*G, y: iy*G, z: top, length:o.l, width:o.w, height:o.h, typeId:t.id, color:t.color, name:t.name||t.id, weight:t.weight });
+                  weightLeft -= (t.weight||0);
+                  if (remainingById[t.id] !== Infinity) remainingById[t.id]--;
+                  placedAny = true;
+                  return true; // placeret én – start forfra for at favorisere store kasser
+                }
+              }
+            }
+          }
+          return false;
+        };
+        // Fortsæt indtil vi ikke kan placere mere eller laget er ~fuldt
+        let guard=0;
+        while (guard++ < 2000){
+          const ratio = calcLayerFillRatio(minTop);
+          if (ratio >= 0.80) break; // næsten fuldt (reduceret fra 0.98)
+          if (!tryPlaceLoop()) break;
+        }
+        return placedAny;
+      }
+
+      // ============================================================================
+      // (2) FASE-BASERET GREEDY TETRIS - Pak kasser i faser baseret på antal
+      // ============================================================================
+      
+      // Gruppér kasser efter størrelse og tæl hvor mange der er tilbage
+      const getSizeKey = (t) => `${t.length}×${t.width}×${t.height}`;
+      const getSizeCounts = () => {
+        const counts = new Map();
+        for (const t of boxTypesInput) {
+          const rem = remainingById[t.id];
+          if (!(rem === Infinity || rem > 0)) continue;
+          const key = getSizeKey(t);
+          counts.set(key, (counts.get(key) || 0) + (rem === Infinity ? 1000 : rem));
+        }
+        return counts;
+      };
+      
+      // Bestem hvilken fase vi er i
+      let currentPhase = 0; // 0 = store grupper (5+), 1 = mellem grupper (2-4), 2 = enkelt kasser
+      const getPhaseForSize = (count) => {
+        if (count >= 5) return 0;
+        if (count >= 2) return 1;
+        return 2;
+      };
+      
       while (true) {
         let best = null;
         const candList = [];
 
-        // Forbedret lag-hÃ¥ndtering: tillad fleksibel placering for bedre kompakthed
         const minLayerTop = hMinAll();
+        const maxLayerTop = hMaxAll();
         let hasBottomAtMinLayer = false;
         let hasAnyAtMinLayer = false;
         
+        // Beregn hvor fyldt det laveste lag er
+        const minLayerFillRatio = calcLayerFillRatio(minLayerTop);
+        
+        // Definer pallet størrelse klasser tidligt så de kan bruges overalt
+        const palletArea = palSpec.length * palSpec.width;
+        const isSmallPallet = palletArea < 3000; // kvartpalle
+        const isMediumPallet = palletArea < 7000; // halvpalle (4800)
+        const isLargePallet = palletArea >= 7000; // europalle (9600)
+        
+        // MEGET STRENGT krav: Kræv at mindst 80% af laget er fyldt før vi bygger videre (reduceret fra 0.98)
+        const MIN_LAYER_FILL_THRESHOLD = 0.80;
+        
+        // KRITISK: Hvis det laveste lag ikke er tilstrækkeligt fyldt, tillad KUN placeringer på det laveste lag
+        const mustFillMinLayer = (minLayerFillRatio < MIN_LAYER_FILL_THRESHOLD) && (maxLayerTop > minLayerTop + EPS);
+        
+        // Tjek om vi skal skifte fase
+        const sizeCounts = getSizeCounts();
+        const hasCurrentPhaseBoxes = Array.from(sizeCounts.values()).some(count => getPhaseForSize(count) === currentPhase);
+        
+        if (!hasCurrentPhaseBoxes && currentPhase < 2) {
+          currentPhase++;
+          console.log(`📦 SKIFTER TIL FASE ${currentPhase}: ${currentPhase === 0 ? 'Store grupper (5+)' : currentPhase === 1 ? 'Mellem grupper (2-4)' : 'Enkelt kasser'}`);
+          continue; // Start forfra med ny fase
+        }
+        
+        // Lag-gating: beregn laveste 'top' i H og tjek fyldningsgrad
+        let currentMinTop = Infinity, cellsAtMin = 0, cellsSupported = 0;
+        for (let x = 0; x < H.length; x++) {
+          for (let y = 0; y < H[0].length; y++) {
+            if (H[x][y] < currentMinTop - EPS) { currentMinTop = H[x][y]; cellsAtMin = 0; }
+          }
+        }
+        for (let x = 0; x < H.length; x++) {
+          for (let y = 0; y < H[0].length; y++) {
+            if (Math.abs(H[x][y] - currentMinTop) <= EPS) cellsAtMin++;
+          }
+        }
+
+        // ALTID forsøg at fylde det aktuelle lag først (ikke kun hvis mustFillMinLayer)
+        if (minLayerFillRatio < 0.80) { // Hvis laget ikke er næsten fuldt (reduceret fra 0.99)
+          const filled = fillCurrentLayerGreedy(minLayerTop);
+          if (filled) {
+            // hvis vi fik placeret noget, så start forfra i while og evaluer igen
+            console.log(`📦 Fyldte lag - fyldningsgrad: ${(minLayerFillRatio*100).toFixed(1)}% -> ${(calcLayerFillRatio(minLayerTop)*100).toFixed(1)}%`);
+            continue;
+          }
+        }
+        
+        if (mustFillMinLayer) {
+          // Hvis vi stadig ikke har fyldt laget nok, stop og start ny pallet
+          console.log(`🚫 Kan ikke fylde lag tilstrækkeligt (${(minLayerFillRatio*100).toFixed(1)}%) - starter ny pallet`);
+          break;
+        }
+        
         // Pre-scan: tjek om der er "I bund" kasser der KAN placeres pÃ¥ det laveste lag
-        // Men tving IKKE kun dem til at blive placeret der
         for (const tb of boxTypesInput) {
           const leftb = remainingById[tb.id];
           if (!(leftb===Infinity || leftb>0)) continue;
@@ -1164,7 +1489,7 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
           if (tb.weight > weightLeft + EPS) continue;
           
           // Tjek om denne "I bund" kasse kan placeres pÃ¥ det laveste lag
-          orientationsFor(tb).forEach(ob=>{
+          orientationsFor(tb, palSpec.length, palSpec.width).forEach(ob=>{
             if (ob.l > palSpec.length + EPS || ob.w > palSpec.width + EPS) return;
             const w = Math.round(ob.l / G), l = Math.round(ob.w / G); 
             const h = ob.h;
@@ -1173,10 +1498,8 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                 const topB = maxUnder(ix,iy,w,l);
                 if (topB !== minLayerTop) continue;
                 const coverB = supportRatioAtTop(ix, iy, w, l, topB);
-                
-                // Special case: "I bund" boxes at ground level (z=0) should always be allowed
-                const isBottomRequiredAtGround = tb.bottomRequired && topB <= EPS;
-                // Support check removed - always allow placement
+                const needB = supportDemand(topB);
+                if (coverB + EPS < needB) continue; // for lidt støtte → prøv næste placering
                 if (topB + h > palSpec.maxHeight + EPS) continue;
                 
                 hasBottomAtMinLayer = true;
@@ -1187,13 +1510,18 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
           if (hasBottomAtMinLayer) break;
         }
         
-        // Tjek om der er nogen kasser der kan placeres pÃ¥ det laveste lag
+        // Tjek om der er nogen kasser der kan placeres pÃ¥ det laveste lag (kun i nuværende fase)
         for (const tb2 of boxTypesInput) {
           const leftAny = remainingById[tb2.id];
           if (!(leftAny===Infinity || leftAny>0)) continue;
           if (tb2.weight > weightLeft + EPS) continue;
 
-          orientationsFor(tb2).forEach(ob=>{
+          // Tjek fase
+          const sizeKey2 = getSizeKey(tb2);
+          const sizeCount2 = sizeCounts.get(sizeKey2) || 0;
+          if (getPhaseForSize(sizeCount2) !== currentPhase) continue;
+
+          orientationsFor(tb2, palSpec.length, palSpec.width).forEach(ob=>{
             if (ob.l > palSpec.length + EPS || ob.w > palSpec.width + EPS) return;
             const w2 = Math.round(ob.l / G), l2 = Math.round(ob.w / G);
             const h2 = ob.h;
@@ -1202,10 +1530,8 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                 const top2 = maxUnder(ix2,iy2,w2,l2);
                 if (top2 !== minLayerTop) continue;
                 const cover2 = supportRatioAtTop(ix2, iy2, w2, l2, top2);
-                
-                // Special case: "I bund" boxes at ground level (z=0) should always be allowed
-                const isBottomRequiredAtGround = tb2.bottomRequired && top2 <= EPS;
-                // Support check removed - always allow placement
+                const need2 = supportDemand(top2);
+                if (cover2 + EPS < need2) continue; // for lidt støtte → prøv næste placering
                 if (top2 + h2 > palSpec.maxHeight + EPS) continue;
                 
                 hasAnyAtMinLayer = true;
@@ -1223,7 +1549,13 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
           if (!(left===Infinity || left>0)) continue;
           if (t.weight > weightLeft + EPS) continue;
 
-          orientationsFor(t).forEach(o=>{
+          // FASE-FILTER: Kun tillade kasser fra den aktuelle fase
+          const sizeKey = getSizeKey(t);
+          const sizeCount = sizeCounts.get(sizeKey) || 0;
+          const boxPhase = getPhaseForSize(sizeCount);
+          if (boxPhase !== currentPhase) continue; // Spring over hvis ikke i nuværende fase
+
+          orientationsFor(t, palSpec.length, palSpec.width).forEach(o=>{
             if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) return;
             const w = Math.round(o.l / G), l = Math.round(o.w / G);
             const h = o.h;
@@ -1247,49 +1579,39 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                   }
                   return { pallets: [], boxes: [] };
                 }
-                // Respekter 'I bund' kolonner: hvis et omrÃ¥de er lÃ¥st til en type, mÃ¥ kun samme type
-                // med samme footprint fortsÃ¦tte i kolonnen
-                let violatesLock = false;
-                for (const L of bottomColumnLocks) {
-                  if (overlapsLock(ix,iy,w,l,L)) {
-                    if (!(ix===L.ix && iy===L.iy && w===L.w && l===L.l && t.id===L.typeId)) {
-                      violatesLock = true; break;
-                    }
-                  }
-                }
-                if (violatesLock) continue;
+                // FJERNET: bottomColumnLocks logik - tillad forskellige "I bund" typer at stække
 
                 const top = maxUnder(ix,iy,w,l);
 
-                // Forbedret lag-hÃ¥ndtering: prioritÃ©r kompakte lag i stedet for tÃ¥rne
-                // Prioriter "I bund" kasser pÃ¥ det laveste lag, men tillad også andre kasser
-                if (hasBottomAtMinLayer && t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top !== minLayerTop) {
-                  // "I bund" kasser skal helst pÃ¥ det laveste lag, men ikke tvinges
-                  continue;
-                }
-                
-                // STÃ†RKERE prioritet for kompakte lag: tving kasser til at fylde eksisterende lag fÃ¸r nye
-                if (hasAnyAtMinLayer && top !== minLayerTop) {
-                  // Prioriter det laveste lag - dette er kritisk for at undgÃ¥ tÃ¥rne
-                  continue;
-                }
-                
-                // NY: Ekstra check for at undgÃ¥ tÃ¥rne - hvis vi er mere end 30cm over det laveste lag, prioriter laveste
-                if (top > minLayerTop + 30) {
-                  continue; // Tving kasser til at fylde lavere lag først
+                // Lag-gating: fyld laveste lag før næste
+                if (top > currentMinTop + EPS) {
+                  const lowestLayerFillRatio = cellsAtMin / (H.length * H[0].length); // enkel approx.
+                  if (lowestLayerFillRatio < LAYER_FILL_THRESHOLD) continue; // bliv på nederste lag
                 }
 
-                // Regler for "I bund": bottomRequired mÃ¥ kun stÃ¥ pÃ¥ palle eller oven pÃ¥ andre bottomRequired
+                // KRITISK LAG-FYLDNINGS-REGEL: ALTID prioriter placering på det laveste lag
+                // Dette sikrer at vi fylder lag komplet før vi bygger højere
+                // Juster threshold baseret på pallet størrelse
+                const layerFillThreshold = isMediumPallet ? 0.70 : 0.80; // Mere fleksibel for halvpalle (reduceret)
+                if (minLayerFillRatio < layerFillThreshold && top > minLayerTop + EPS) {
+                  continue; // TVING LAG-FYLDNING - ingen placeringer på højere lag hvis under threshold
+                }
+                
+                // ENDNU STRENGERE: Hvis der er kasser der kan placeres på det laveste lag,
+                // tillad ALDRIG højere lag
+                if (hasAnyAtMinLayer && top > minLayerTop + EPS) {
+                  continue; // ALDRIG placering på højere lag hvis der er plads på laveste
+                }
+
+                // KRITISK REGEL: "I bund" kasser må KUN stække på andre "I bund" kasser
                 if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
                   const brUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
                   if (!brUnder) continue;
                 }
                 
                 const cover = supportRatioAtTop(ix, iy, w, l, top);
-                
-                // Special case: "I bund" boxes at ground level (z=0) should always be allowed
-                // regardless of support requirements since they sit directly on the pallet
-                const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
+                const need = supportDemand(top);
+                if (cover + EPS < need) continue; // for lidt støtte → prøv næste placering
 
                 // Definer hasBottomRequiredUnder variablen for brug i scoring
                 let hasBottomRequiredUnder = false;
@@ -1298,7 +1620,6 @@ if (!canFit) errs.push(`Række ${rowIdx}: Kassen (${bt.L}×${bt.B}×${bt.H}) kan
                 }
 
 const isBottomRequiredStacked = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > EPS && hasBottomRequiredUnder;
-// Support check removed - always allow placement
                 // Streng højde validering - stop hvis vi overskrider max højde
                 if (top + h > palSpec.maxHeight + EPS) {
                   const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
@@ -1353,35 +1674,50 @@ const isBottomRequiredStacked = t && typeof t.bottomRequired === 'boolean' && t.
                   return completionRatio * 2.0; // Standard bonus
                 })();
                 
-                // Adaptive scoring weights baseret pÃ¥ pallet stÃ¸rrelse
-                const palletArea = palSpec.length * palSpec.width;
-                const isSmallPallet = palletArea < 5000; // kvartpalle
-                const isMediumPallet = palletArea < 10000; // halvpalle
+                // Juster weights baseret på pallet type (pallet størrelse allerede defineret tidligere)
+                const peakWeight = isSmallPallet ? 4.0 : isMediumPallet ? 4.5 : 3.0; // Øget for halvpalle
+                const compactWeight = isSmallPallet ? 2.0 : isMediumPallet ? 2.5 : 1.2; // Øget for halvpalle
+                const heightBias = isSmallPallet ? 0.15 : isMediumPallet ? 0.18 : 0.12; // Øget for halvpalle
+                const baseBonus = isSmallPallet ? 0.8 : isMediumPallet ? 1.0 : 0.4; // Øget for halvpalle
+                const tetrisWeight = isSmallPallet ? 1.5 : isMediumPallet ? 2.0 : 1.0; // Øget for halvpalle
                 
-                // Juster weights baseret pÃ¥ pallet type
-                const peakWeight = isSmallPallet ? 4.0 : isMediumPallet ? 3.5 : 3.0;
-                const compactWeight = isSmallPallet ? 2.0 : isMediumPallet ? 1.5 : 1.2;
-                const heightBias = isSmallPallet ? 0.15 : isMediumPallet ? 0.12 : 0.12;
-                const baseBonus = isSmallPallet ? 0.8 : isMediumPallet ? 0.6 : 0.4;
-                const tetrisWeight = isSmallPallet ? 1.5 : isMediumPallet ? 1.2 : 1.0;
-                
-                // INSPIRERET AF "I BUND" ALGORITMEN: Simpel, effektiv scoring
-                // Fokus pÃ¥ lav højde og minimering af hul - ligesom "I bund" algoritmen
+                // Grouping: hold samme type sammen + lodret stabling
+                let groupingScore = 0;
+                // høj prioritet: stacking direkte over samme type med identisk footprint
+                if (isStackingSameFootprint(ix, iy, w, l, top, t.id, null)) groupingScore += 1000;
+                // sekundær: kant-op-til-samme type i samme lag
+                if (isAdjacentToSameType(ix, iy, w, l, t.id, null)) groupingScore += 200;
+
+                // OPTIMERET SCORING FOR KOMPAKT LAG-FYLDNING
+                // NY STRATEGI: Prioriter side-ved-side placering over vertikal stabling
                 const score = [
-                  // Prioriter lav højde (som "I bund" algoritmen)
-                  top, // Lavest højde først - direkte inspiration fra "I bund"
-                  // MinimÃ©r hul (som "I bund" algoritmen)
-                  holeScore, // Samme logik som "I bund" - minimer hul
-                  // StÃ¸rre kasser først (som "I bund" algoritmen)
-                  -(o.l * o.w * o.h), // StÃ¸rre kasser først for bedre stabilitet
-                  // Venstre først (som "I bund" algoritmen)
-                  ix, // Venstre først
-                  // Bund først (som "I bund" algoritmen)
-                  iy, // Bund først
-                  // Ekstra kompaktheds-bonus
-                  -(top + h) * 1.2, // StÃ¦rk bonus for lav placering
-                  // Bonus for "I bund" kasser i bunden
-                  (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top === 0) ? -2.0 : 0
+                  // 1. KRITISK: Prioriter placering på samme lag (top=0) MEGET højt
+                  // Dette sikrer at vi fylder det aktuelle lag før vi bygger højere
+                  (top === 0) ? 0 : top * 1000, // MEGET stor straf for at bygge højere
+                  
+                  // 2. Minimér peak-højde efter placering (kun hvis vi bygger højere)
+                  (top === 0) ? 0 : (top + h) * 50,
+                  
+                  // 3. MEGET STÆRK bonus for at fylde eksisterende huller på samme lag
+                  (top === 0) ? -holeScore * 50 : -holeScore * 5,
+                  
+                  // 4. Bonus for at fylde store områder på samme lag
+                  (top === 0) ? layerCompletion * 100 : layerCompletion * 10,
+                  
+                  // 5. Grouping bonus: hold samme type sammen
+                  -groupingScore,
+                  
+                  // 6. Større kasser først for bedre stabilitet og kompakthed
+                  -(o.l * o.w * o.h) / 100,
+                  
+                  // 7. Venstre først for konsistent pakning
+                  ix,
+                  
+                  // 8. Bund først for konsistent pakning
+                  iy,
+                  
+                  // 9. Bonus for "I bund" kasser i bunden
+                  (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top === 0) ? -100 : 0
                 ];
 
                 if (!best || lexLess(score, best.score)) {
@@ -1416,22 +1752,20 @@ const isBottomRequiredStacked = t && typeof t.bottomRequired === 'boolean' && t.
             let placedLA = false;
             for (const tb of bigs) {
               if (tb.id===c.t.id && (remainingById[tb.id]||0)<=1) continue;
-              for (const ob of orientationsFor(tb)) {
+              for (const ob of orientationsFor(tb, palSpec.length, palSpec.width)) {
                 const w2 = Math.round(ob.l / G), l2 = Math.round(ob.w / G), h2 = ob.h;
                 for (let ix2=0; ix2<=Nx - w2; ix2++) for (let iy2=0; iy2<=Ny - l2; iy2++) {
                   let top2 = 0; for (let x=ix2; x<ix2+w2; x++) for (let y=iy2; y<iy2+l2; y++) top2 = Math.max(top2, Hsim[x][y]);
                   const cover2 = supportRatioAtTop(ix2,iy2,w2,l2,top2);
-// Exempt 'I bund' at ground and unify threshold with slider
-const isBottomRequiredAtGround2 = tb && typeof tb.bottomRequired === 'boolean' && tb.bottomRequired === true && top2 <= EPS;
-const demand2 = Math.max((window.minSupport||0), supportDemand(tb.weight||0, top2));
-                  // Support check removed - always allow placement
+                  const need2 = supportDemand(top2);
+                  if (cover2 + EPS < need2) continue; // for lidt støtte → prøv næste placering
                   // Streng højde validering i lookahead
                   if (top2 + h2 > palSpec.maxHeight + EPS) {
                     const maxHeightSetting = parseFloat(document.getElementById('maxHeight')?.value || 180);
                     console.log(`âš ï¸ Lookahead: Kasse ${tb.name || tb.id} overskrider max højde: ${top2 + h2}cm > ${palSpec.maxHeight}cm (${maxHeightSetting}cm - ${palSpec.baseHeight||0}cm base)`);
                     continue;
                   }
-                  // I bund-regler i lookahead: bottomRequired krÃ¦ver bottomRequired under (normal mÃ¥ godt stÃ¥ pÃ¥ bund)
+                  // KRITISK REGEL: "I bund" kasser må KUN stække på andre "I bund" kasser
                   if (tb && typeof tb.bottomRequired === 'boolean' && tb.bottomRequired === true && top2 > 0) {
                     const brUnder2 = hasBottomRequiredUnderAt(ix2, iy2, w2, l2, top2);
                     if (!brUnder2) continue;
@@ -1463,7 +1797,7 @@ const demand2 = Math.max((window.minSupport||0), supportDemand(tb.weight||0, top
             const left2 = remainingById[t2.id];
             if (!(left2===Infinity || left2>0)) continue;
             if (t2.weight > weightLeft + EPS) continue;
-            for (const o2 of orientationsFor(t2)) {
+            for (const o2 of orientationsFor(t2, palSpec.length, palSpec.width)) {
               if (o2.l > palSpec.length + EPS || o2.w > palSpec.width + EPS) continue;
               const w2 = Math.round(o2.l / G), l2 = Math.round(o2.w / G), h2 = o2.h;
               for (let ix2 = 0; ix2 <= Nx - w2; ix2++) {
@@ -1482,7 +1816,7 @@ const demand2 = Math.max((window.minSupport||0), supportDemand(tb.weight||0, top
 // regardless of support requirements since they sit directly on the pallet
                   const isBottomRequiredAtGround = t2 && typeof t2.bottomRequired === 'boolean' && t2.bottomRequired === true && top2 <= EPS;
                   // Support check removed - always allow placement
-                  // I bund-regler i second pass: bottomRequired krÃ¦ver bottomRequired under
+                  // KRITISK REGEL: "I bund" kasser må KUN stække på andre "I bund" kasser
                   if (t2 && typeof t2.bottomRequired === 'boolean' && t2.bottomRequired === true && top2 > 0) {
                     const brUnder2 = hasBottomRequiredUnderAt(ix2, iy2, w2, l2, top2);
                     if (!brUnder2) continue;
@@ -1505,14 +1839,15 @@ const demand2 = Math.max((window.minSupport||0), supportDemand(tb.weight||0, top
                   const heightRisk2 = Math.max(0, h2 - (palSpec.maxHeight - hMaxAll()));
                   const tallEarlyBias2 = (top2 === minLayerTop) ? (-0.30 * h2) : 0;
                   const score2 = [
-                    3.0 * peakAfter2 + 1.2*localRise2 + 0.8*heightRisk2 - foundationBonus2 * 0.6 - baseAreaBonus2 * 0.4 + tallEarlyBias2,
-                    (addedVol2 + fitBias2) * 0.5,
-                    // Support penalty removed
-                    -divisibleBonus2 * 3.0,
-                    h2 * 0.12,
-                    // StÃ¦rkere bonus for kompakt placering i first second pass
-                    -(top2 + h2) * 0.25,
-                    -top2 * 0.15
+                    // KRITISK: Prioriter placering på samme lag (top=0) MEGET højt
+                    (top2 === 0) ? 0 : top2 * 1000,
+                    // Minimér peak-højde (kun hvis vi bygger højere)
+                    (top2 === 0) ? 0 : (top2 + h2) * 50,
+                    // Større kasser først
+                    -(o2.l * o2.w * o2.h) / 100,
+                    // Position
+                    ix2,
+                    iy2
                   ];
                   if (!best2 || lexLess(score2, best2.score)) {
                     best2 = { t:t2, o:o2, ix:ix2, iy:iy2, w:w2, l:l2, h:h2, top:top2, score:score2 };
@@ -1530,24 +1865,21 @@ const demand2 = Math.max((window.minSupport||0), supportDemand(tb.weight||0, top
             const left2 = remainingById[t2.id];
             if (!(left2===Infinity || left2>0)) continue;
             if (t2.weight > weightLeft + EPS) continue;
-            for (const o2 of orientationsFor(t2)) {
+            for (const o2 of orientationsFor(t2, palSpec.length, palSpec.width)) {
               if (o2.l > palSpec.length + EPS || o2.w > palSpec.width + EPS) continue;
               const w2 = Math.round(o2.l / G), l2 = Math.round(o2.w / G), h2 = o2.h;
               for (let ix2 = 0; ix2 <= Nx - w2; ix2++) {
                 for (let iy2 = 0; iy2 <= Ny - l2; iy2++) {
                   const top2 = maxUnder(ix2,iy2,w2,l2);
                   const cover2 = supportRatioAtTop(ix2, iy2, w2, l2, top2);
-// Special case: "I bund" boxes at ground level (z=0) should always be allowed
-// regardless of support requirements since they sit directly on the pallet
-                  const isBottomRequiredAtGround = t2 && typeof t2.bottomRequired === 'boolean' && t2.bottomRequired === true && top2 <= EPS;
+                  const need2 = supportDemand(top2);
+                  if (cover2 + EPS < need2) continue; // for lidt støtte → prøv næste placering
                   
-                  // FIXED: For "I bund" kasser, tjek at de kun stÃ¥r oven pÃ¥ andre "I bund" kasser
+                  // KRITISK REGEL: "I bund" kasser må KUN stække på andre "I bund" kasser
                   if (t2 && typeof t2.bottomRequired === 'boolean' && t2.bottomRequired === true && top2 > EPS) {
                     const brUnder2 = hasBottomRequiredUnderAt(ix2, iy2, w2, l2, top2);
                     if (!brUnder2) continue;
                   }
-                  
-if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   if (top2 + h2 > palSpec.maxHeight + EPS) continue;
                   const addedVol2 = o2.l * o2.w * o2.h;
                   const peakAfter2 = Math.max(hMaxAll(), top2 + h2);
@@ -1561,14 +1893,15 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   const heightRisk2 = Math.max(0, h2 - (palSpec.maxHeight - hMaxAll()));
                   const tallEarlyBias2 = (top2 === minLayerTop) ? (-0.30 * h2) : 0;
                   const score2 = [
-                    3.0 * peakAfter2 + 1.2*localRise2 + 0.8*heightRisk2 - foundationBonus2 * 0.6 - baseAreaBonus2 * 0.4 + tallEarlyBias2,
-                    (addedVol2 + fitBias2) * 0.5,
-                    -cover2 * 2.2,
-                    -divisibleBonus2 * 3.0,
-                    h2 * 0.12,
-                    // StÃ¦rkere bonus for kompakt placering i second second pass
-                    -(top2 + h2) * 0.25,
-                    -top2 * 0.15
+                    // KRITISK: Prioriter placering på samme lag (top=0) MEGET højt
+                    (top2 === 0) ? 0 : top2 * 1000,
+                    // Minimér peak-højde (kun hvis vi bygger højere)
+                    (top2 === 0) ? 0 : (top2 + h2) * 50,
+                    // Større kasser først
+                    -(o2.l * o2.w * o2.h) / 100,
+                    // Position
+                    ix2,
+                    iy2
                   ];
                   if (!best2 || lexLess(score2, best2.score)) {
                     best2 = { t:o2.t||t2, o:o2, ix:ix2, iy:iy2, w:w2, l:l2, h:h2, top:top2, score:score2 };
@@ -1588,7 +1921,7 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
             if (!(left3===Infinity || left3>0)) continue;
             if (!t3 || typeof t3.bottomRequired !== 'boolean' || !t3.bottomRequired || hasGroundPlacement[t3.id]) continue; // only first-of-type 'I bund'
             if (t3.weight > weightLeft + EPS) continue;
-            for (const o3 of orientationsFor(t3)) {
+            for (const o3 of orientationsFor(t3, palSpec.length, palSpec.width)) {
               if (o3.l > palSpec.length + EPS || o3.w > palSpec.width + EPS) continue;
               const w3 = Math.round(o3.l / G), l3 = Math.round(o3.w / G), h3 = o3.h;
               for (let ix3 = 0; ix3 <= Nx - w3; ix3++) {
@@ -1603,11 +1936,10 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                 for (let iy3 = 0; iy3 <= Ny - l3; iy3++) {
                   const top3 = maxUnder(ix3,iy3,w3,l3);
                   const cover3 = supportRatioAtTop(ix3, iy3, w3, l3, top3);
-// Special case: "I bund" boxes at ground level (z=0) should always be allowed
-// regardless of support requirements since they sit directly on the pallet
-                  const isBottomRequiredAtGround = t3 && typeof t3.bottomRequired === 'boolean' && t3.bottomRequired === true && top3 <= EPS;
+                  const need3 = supportDemand(top3);
+                  if (cover3 + EPS < need3) continue; // for lidt støtte → prøv næste placering
                   
-                  // FIXED: For "I bund" kasser, tjek at de kun stÃ¥r oven pÃ¥ andre "I bund" kasser
+                  // KRITISK REGEL: "I bund" kasser må KUN stække på andre "I bund" kasser
                   if (t3 && typeof t3.bottomRequired === 'boolean' && t3.bottomRequired === true && top3 > EPS) {
                     const brUnder3 = hasBottomRequiredUnderAt(ix3, iy3, w3, l3, top3);
                     if (!brUnder3) continue;
@@ -1622,11 +1954,15 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   const localRise3 = Math.max(0, (top3 + h3) - Math.max(localAvg3, top3));
                   const peakAfter3 = Math.max(hMaxAll(), top3 + h3);
                   const score3 = [
-                    3.0 * peakAfter3 + 1.0*localRise3,
-                    -(o3.l * o3.w * o3.h),
-                    // StÃ¦rkere bonus for kompakt placering i third pass
-                    -(top3 + h3) * 0.3,
-                    -top3 * 0.2
+                    // KRITISK: Prioriter placering på samme lag (top=0) MEGET højt
+                    (top3 === 0) ? 0 : top3 * 1000,
+                    // Minimér peak-højde (kun hvis vi bygger højere)
+                    (top3 === 0) ? 0 : (top3 + h3) * 50,
+                    // Større kasser først
+                    -(o3.l * o3.w * o3.h) / 100,
+                    // Position
+                    ix3,
+                    iy3
                   ];
                   if (!best3 || lexLess(score3, best3.score)) {
                     best3 = { t:t3, o:o3, ix:ix3, iy:iy3, w:w3, l:l3, h:h3, top:top3, score:score3, softBottom:true };
@@ -1705,7 +2041,7 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
           const remaining = [];
           for (const t of instances) {
             let placed = false;
-            for (const o of orientationsFor(t)) {
+            for (const o of orientationsFor(t, palSpec.length, palSpec.width)) {
               if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
               const w = Math.round(o.l / G), l = Math.round(o.w / G), h = o.h;
               let best = null;
@@ -1730,22 +2066,20 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                     continue;
                   }
                   const cover = supportRatioAtTop(ix, iy, w, l, top);
-                  // Special case: "I bund" boxes at ground level (z=0) should always be allowed
-                  // regardless of support requirements since they sit directly on the pallet
-                  const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
-                  // Support check removed - always allow placement
+                  const need = supportDemand(top);
+                  if (cover + EPS < need) continue; // for lidt støtte → prøv næste placering
                   if (t.weight > weightLeft + EPS) continue;
-                  // I bund-regler i repack fase B
+                  // KRITISK REGEL: "I bund" kasser må KUN stække på andre "I bund" kasser
                   if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
                     const brUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
                     if (!brUnder) continue;
                   }
                   // prefer larger base area && more bottom-left
                   const score = [ 
-                    -(o.l*o.w), // StÃ¸rste base først
+                    (top === 0) ? 0 : top * 1000, // KRITISK: Prioriter samme lag (top=0)
+                    -(o.l*o.w*o.h) / 100, // Største volumen først
                     ix, // Venstre først
-                    iy, // Bund først
-                    -top * 0.1 // Bonus for lav placering
+                    iy // Bund først
                   ];
                   if (!best || score[0] < best.score[0] || (score[0]===best.score[0] && (score[1] < best.score[1] || (score[1]===best.score[1] && score[2]<best.score[2])))) {
                     best = {ix,iy,w,l,h,o,t,top,score};
@@ -1769,7 +2103,7 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
           // ---- PHASE B: place remaining anywhere (bottom-left min-height) ----
           for (const t of remaining) {
             let best = null;
-            for (const o of orientationsFor(t)) {
+            for (const o of orientationsFor(t, palSpec.length, palSpec.width)) {
               if (o.l > palSpec.length + EPS || o.w > palSpec.width + EPS) continue;
               const w = Math.round(o.l / G), l = Math.round(o.w / G), h = o.h;
               for (let ix=0; ix<=Nx - w; ix++) {
@@ -1792,23 +2126,22 @@ if (!isBottomRequiredAtGround && cover2 < (window.minSupport||0)) continue;
                   }
                   // support at this top
                   const cover = supportRatioAtTop(ix, iy, w, l, top);
-                  // Special case: "I bund" boxes at ground level (z=0) should always be allowed
-                  // regardless of support requirements since they sit directly on the pallet
-                  const isBottomRequiredAtGround = t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top <= EPS;
-                  // Support check removed - always allow placement
+                  const need = supportDemand(top);
+                  if (cover + EPS < need) continue; // for lidt støtte → prøv næste placering
                   if (t.weight > weightLeft + EPS) continue;
-                  // I bund-regler i repack fase B (fortsat)
+                  // KRITISK REGEL: "I bund" kasser må KUN stække på andre "I bund" kasser
                   if (t && typeof t.bottomRequired === 'boolean' && t.bottomRequired === true && top > 0) {
                     const brUnder = hasBottomRequiredUnderAt(ix, iy, w, l, top);
                     if (!brUnder) continue;
                   }
                   const peakAfter = Math.max(top + h, Math.max(0, ...H.flat()));
                   const score = [ 
-                    top, // Lavest top først
-                    peakAfter, // Lavest peak derefter
-                    - (o.l*o.w), // StÃ¸rste base derefter
-                    -top * 0.2 // Bonus for lav placering
-                  ]; // prefer lowest top, then lowest peak, then largest base
+                    (top === 0) ? 0 : top * 1000, // KRITISK: Prioriter samme lag (top=0)
+                    (top === 0) ? 0 : peakAfter * 50, // Lavest peak derefter (kun hvis bygger højere)
+                    -(o.l*o.w*o.h) / 100, // Største volumen derefter
+                    ix, // Venstre først
+                    iy // Bund først
+                  ];
                   if (!best || score[0] < best.score[0] ||
                       (score[0]===best.score[0] && (score[1] < best.score[1] ||
                        (score[1]===best.score[1] && score[2] < best.score[2])))) {
